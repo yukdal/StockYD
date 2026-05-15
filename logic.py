@@ -4,7 +4,9 @@ import hashlib
 class DisclosureLogic:
     def __init__(self):
         # 정규표현식: 주식선물 AND 가격제한폭 확대요건 도달 AND (2단계 OR 3단계)
-        self.pattern = re.compile(r"주식선물.*가격제한폭 확대요건 도달.*([23])단계")
+        # 정규표현식: 주식선물 [23]단계 가격제한폭 확대요건 도달
+        # 정규표현식: 주식선물 [23]단계 가격제한폭 확대요건 도달 (순서 유연하게 대응)
+        self.pattern = re.compile(r"주식선물.*([23])단계.*가격제한폭\s*확대요건\s*도달|주식선물.*가격제한폭\s*확대요건\s*도달.*([23])단계")
         self.seen_ids = set()
 
     def filter_disclosures(self, disclosures):
@@ -20,7 +22,9 @@ class DisclosureLogic:
                     continue
                 
                 # 상세 정보 파싱
-                phase = int(match.group(1))
+                # 두 개 이상의 캡처 그룹 중 None이 아닌 것을 선택
+                phase_match = match.group(1) or match.group(2)
+                phase = int(phase_match) if phase_match else 0
                 direction = "상승" if "(상승)" in title else "하락" if "(하락)" in title else "알수없음"
                 
                 disc['phase'] = phase

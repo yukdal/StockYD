@@ -17,40 +17,45 @@ class DisclosureScraper:
         }
 
     async def fetch_kind(self, session):
-        """KIND 오늘의 공시 스크래핑"""
-        payload = {
-            'method': 'searchTodayDisclosureSub',
-            'currentPageSize': '100',
-            'pageIndex': '1',
-            'orderMode': '1',
-            'orderStat': 'D',
-            'forward': 'todaydisclosure_sub',
-            'searchCodeType': '',
-            'searchCorpName': '',
-            'all_repnt_code_lst': '',
-            'marketType': '0', # 0: 전체
-            'dist_repnt_code': '',
-            'repnt_code_lst': ''
-        }
-        
-        try:
-            async with session.post(self.KIND_URL, data=payload, headers=self.headers) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    return self._parse_kind(html)
-                else:
-                    print(f"KIND Error: {response.status}")
-                    return []
-        except Exception as e:
-            print(f"KIND Fetch Exception: {e}")
-            return []
+        """KIND 오늘의 공시 스크래핑 (코스피, 코스닥, 파생상품 시장)"""
+        all_kind_disclosures = []
+        # marketType 1: 유가증권, 2: 코스닥, 3: 파생상품
+        for m_type in ['1', '2', '3']:
+            payload = {
+                'method': 'searchTodayDisclosureSub',
+                'currentPageSize': '100',
+                'pageIndex': '1',
+                'orderMode': '1',
+                'orderStat': 'D',
+                'forward': 'todaydisclosure_sub',
+                'marketType': m_type,
+            }
+            
+            try:
+                async with session.post(self.KIND_URL, data=payload, headers=self.headers) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        disclosures = self._parse_kind(html, m_type)
+                        all_kind_disclosures.extend(disclosures)
+                    else:
+                        print(f"KIND Error (Market {m_type}): {response.status}")
+            except Exception as e:
+                print(f"KIND Fetch Exception (Market {m_type}): {e}")
+            
+            # 대량 요청 방지 및 안정성을 위한 짧은 지연
+            await asyncio.sleep(0.2)
+            
+        return all_kind_disclosures
 
-    def _parse_kind(self, html):
-        """KIND HTML 테이블 파싱"""
+    def _parse_kind(self, html, market_type_id):
+        """KIND HTML 테이블 파싱 (최신 구조 반영)"""
         soup = BeautifulSoup(html, 'html.parser')
-        rows = soup.select('table.t7 > tbody > tr')
+        # 최신 KIND는 'list type-00' 클래스를 사용하거나 't7'을 사용함
+        rows = soup.select('table.list > tbody > tr') or soup.select('table.t7 > tbody > tr')
         disclosures = []
         
+        market_map = {'1': '[유]', '2': '[코]', '3': '[파]'}
+        default_market = market_map.get(market_type_id, '')
         for row in rows:
             cols = row.find_all('td')
             if len(cols) < 5: continue
@@ -69,9 +74,15 @@ class DisclosureScraper:
                 if match:
                     acpt_no = match.group(1)
             
-            market = "[유]" if "KOSPI" in str(cols[1]) else "[코]" if "KOSDAQ" in str(cols[1]) else ""
-            # KIND HTML에서는 시장 구분이 class나 이미지로 올 수 있음. 
-            # 실제 운영 환경에서는 더 정교한 셀렉터 필요.
+            # 시장 구분 상세화 (이미지가 있을 경우 우선)
+            market = default_market
+            img_tag = cols[1].find('img')
+            if img_tag and 'alt' in img_tag.attrs:
+                alt_text = img_tag['alt']
+                if '유가증권' in alt_text: market = '[유]'
+                elif '코스닥' in alt_text: market = '[코]'
+                elif '코넥스' in alt_text: market = '[넥]'
+                elif '파생상품' in alt_text: market = '[파]'
             
             disclosures.append({
                 'source': 'KIND',

@@ -10,8 +10,11 @@ class TelegramNotifier:
     async def send_message(self, text, session):
         """텔레그램 메시지 전송"""
         if not self.token or not self.chat_id:
-            print("Telegram credentials missing.")
-            print(f"DEBUG Output: \n{text}")
+            missing = []
+            if not self.token: missing.append("TELEGRAM_BOT_TOKEN")
+            if not self.chat_id: missing.append("TELEGRAM_CHAT_ID")
+            print(f"⚠️ 텔레그램 설정 누락: {', '.join(missing)}")
+            print(f"DEBUG (전송 시도한 메시지): \n{text}")
             return False
             
         payload = {

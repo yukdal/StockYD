@@ -7,8 +7,20 @@ from formatter import DisclosureFormatter
 from notifier import TelegramNotifier
 from dotenv import load_dotenv
 
+import sys
+import traceback
+
 # .env 파일 로드 (로컬 환경용)
 load_dotenv()
+
+# 윈도우 터미널 인코딩 문제 해결 (UTF-8 강제 설정)
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Python 3.7 미만 버전 대응 (필요시)
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 async def run_monitor():
     print("🚀 실시간 주식선물 공시 모니터링 시작...")
@@ -45,6 +57,7 @@ async def run_monitor():
                 
             except Exception as e:
                 print(f"❌ 루프 오류 발생: {e}")
+                traceback.print_exc() # 상세 오류 정보 출력
                 await asyncio.sleep(10) # 오류 시 잠시 대기 후 재시도
 
 if __name__ == "__main__":

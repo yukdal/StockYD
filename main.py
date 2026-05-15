@@ -47,7 +47,10 @@ async def run_monitor():
                     message = DisclosureFormatter.format_telegram_message(disc)
                     success = await notifier.send_message(message, session)
                     if success:
-                        print(f"✅ 알림 전송 성공: {disc['corp_name']} ({disc['phase']}단계)")
+                        # 콘솔 로그 색상 적용 (상승: 빨강, 하락: 파랑)
+                        color = "\033[91m" if disc['direction'] == "상승" else "\033[94m" if disc['direction'] == "하락" else "\033[0m"
+                        reset = "\033[0m"
+                        print(f"✅ {color}알림 전송 성공: {disc['corp_name']} ({disc['phase']}단계 {disc['direction']}){reset}")
                     
                     # 봇 차단 방지를 위한 미세 지연
                     await asyncio.sleep(0.5)

@@ -30,8 +30,15 @@ async def run_monitor():
     notifier = TelegramNotifier()
     
     async with aiohttp.ClientSession() as session:
+        # 프로그램 시작 시 1회 즉시 감지
+        print("🔍 텔레그램 새 채팅방 감지 중...")
+        await notifier.auto_detect_chat_ids(session)
+        
         while True:
             try:
+                # 매 루프 시작 시 새로운 채팅방 감지 및 등록
+                await notifier.auto_detect_chat_ids(session)
+                
                 # 1. 데이터 수집 (병렬 처리)
                 kind_task = scraper.fetch_kind(session)
                 dart_task = scraper.fetch_dart(session)

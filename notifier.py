@@ -11,11 +11,14 @@ class TelegramNotifier:
         self.chat_ids = []
         if raw_chat_id:
             if isinstance(raw_chat_id, str):
-                self.chat_ids = [c.strip() for c in raw_chat_id.split(',') if c.strip()]
+                self.chat_ids = [c.strip().strip("'").strip('"') for c in raw_chat_id.split(',') if c.strip()]
             elif isinstance(raw_chat_id, list):
-                self.chat_ids = raw_chat_id
+                self.chat_ids = [str(c).strip().strip("'").strip('"') for c in raw_chat_id]
             else:
-                self.chat_ids = [str(raw_chat_id)]
+                self.chat_ids = [str(raw_chat_id).strip().strip("'").strip('"')]
+                
+        # 중복 제거 (순서 유지)
+        self.chat_ids = list(dict.fromkeys(self.chat_ids))
 
     async def auto_detect_chat_ids(self, session):
         """텔레그램 getUpdates API를 사용하여 새로운 채팅방 ID를 자동 감지 및 등록"""
@@ -89,8 +92,10 @@ class TelegramNotifier:
             new_lines = []
             for line in lines:
                 if line.strip().startswith("TELEGRAM_CHAT_ID="):
-                    new_lines.append(f"TELEGRAM_CHAT_ID={joined_ids}\n")
-                    replaced = True
+                    if not replaced:
+                        new_lines.append(f"TELEGRAM_CHAT_ID={joined_ids}\n")
+                        replaced = True
+                    # replaced가 True이면 이미 썼으므로 무시 (중복 키 방지)
                 else:
                     new_lines.append(line)
 
@@ -117,7 +122,9 @@ class TelegramNotifier:
             return False
             
         success_all = True
-        for chat_id in self.chat_ids:
+        # 전송 직전에 한 번 더 중복을 철저히 제거
+        unique_chat_ids = list(dict.fromkeys(self.chat_ids))
+        for chat_id in unique_chat_ids:
             payload = {
                 'chat_id': chat_id,
                 'text': text,

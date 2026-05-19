@@ -17,10 +17,6 @@ class DisclosureLogic:
             match = self.pattern.search(title)
             
             if match:
-                # 중복 체크 (ID 기반)
-                if disc['id'] in self.seen_ids:
-                    continue
-                
                 # 상세 정보 파싱
                 # 두 개 이상의 캡처 그룹 중 None이 아닌 것을 선택
                 phase_match = match.group(1) or match.group(2)
@@ -31,8 +27,23 @@ class DisclosureLogic:
                 disc['direction'] = direction
                 disc['priority'] = phase # 3단계가 2단계보다 높은 우선순위
                 
+                # 고유 해시 생성 (ID가 다르더라도 내용이 같으면 중복 처리)
+                disc_hash = self.get_hash(disc)
+                
+                # 중복 체크 (ID 기반 및 해시 기반)
+                is_duplicate = False
+                if disc['id'] and disc['id'] in self.seen_ids:
+                    is_duplicate = True
+                if disc_hash in self.seen_ids:
+                    is_duplicate = True
+                    
+                if is_duplicate:
+                    continue
+                
                 filtered.append(disc)
-                self.seen_ids.add(disc['id'])
+                if disc['id']:
+                    self.seen_ids.add(disc['id'])
+                self.seen_ids.add(disc_hash)
         
         # 우선순위(단계) 내림차순, 그 다음 시간 내림차순 정렬
         filtered.sort(key=lambda x: (x['priority'], x['time']), reverse=True)

@@ -10,9 +10,40 @@ from dotenv import load_dotenv
 import sys
 import traceback
 import socket
+import os
+import signal
+import time
 
 # .env 파일 로드 (로컬 환경용)
 load_dotenv()
+
+# 기존 좀비 봇 감지 및 자동 종료 로직
+zombie_was_killed = False
+pid_file = "bot.pid"
+current_pid = os.getpid()
+
+if os.path.exists(pid_file):
+    try:
+        with open(pid_file, 'r') as f:
+            old_pid = int(f.read().strip())
+        
+        if old_pid != current_pid:
+            try:
+                os.kill(old_pid, signal.SIGTERM)
+                time.sleep(1)
+                zombie_was_killed = True
+                print(f"🔫 기존 좀비 봇(PID: {old_pid})을 성공적으로 자동 종료했습니다.")
+            except OSError:
+                pass # 프로세스가 이미 없거나 종료할 권한이 없음
+    except Exception:
+        pass
+
+# 현재 내 PID 저장
+try:
+    with open(pid_file, 'w') as f:
+        f.write(str(current_pid))
+except Exception:
+    pass
 
 # 단일 실행 잠금 (중복 봇 방지)
 try:
@@ -45,6 +76,10 @@ async def run_monitor():
         # 프로그램 시작 시 1회 즉시 감지
         print("🔍 텔레그램 새 채팅방 감지 중...")
         await notifier.auto_detect_chat_ids(session)
+        
+        if zombie_was_killed:
+            msg = "🔫 <b>[시스템 알림]</b>\n새로운 봇이 실행되면서 기존에 켜져 있던 봇(좀비 봇)을 감지하고 자동으로 종료했습니다.\n(이제 알림이 중복으로 오지 않습니다.)"
+            await notifier.send_message(msg, session)
         
         while True:
             try:

@@ -1,13 +1,33 @@
 import re
 import hashlib
+import os
+import json
 
 class DisclosureLogic:
     def __init__(self):
         # 정규표현식: 주식선물 AND 가격제한폭 확대요건 도달 AND (2단계 OR 3단계)
-        # 정규표현식: 주식선물 [23]단계 가격제한폭 확대요건 도달
-        # 정규표현식: 주식선물 [23]단계 가격제한폭 확대요건 도달 (순서 유연하게 대응)
         self.pattern = re.compile(r"주식선물.*([23])단계.*가격제한폭\s*확대요건\s*도달|주식선물.*가격제한폭\s*확대요건\s*도달.*([23])단계")
         self.seen_ids = set()
+        self.save_file = "seen_ids.json"
+        self.is_first_ever_run = not os.path.exists(self.save_file)
+        self._load_seen_ids()
+
+    def _load_seen_ids(self):
+        if os.path.exists(self.save_file):
+            try:
+                with open(self.save_file, "r") as f:
+                    data = json.load(f)
+                    self.seen_ids = set(data)
+            except Exception as e:
+                print(f"⚠️ seen_ids 로드 실패: {e}")
+                self.is_first_ever_run = True
+
+    def _save_seen_ids(self):
+        try:
+            with open(self.save_file, "w") as f:
+                json.dump(list(self.seen_ids), f)
+        except Exception as e:
+            print(f"⚠️ seen_ids 저장 실패: {e}")
 
     def filter_disclosures(self, disclosures):
         """공시 목록에서 조건에 맞는 항목만 필터링하고 정렬"""
@@ -44,6 +64,10 @@ class DisclosureLogic:
                 if disc['id']:
                     self.seen_ids.add(disc['id'])
                 self.seen_ids.add(disc_hash)
+        
+        # 새로운 항목이 추가되었으면 파일에 저장
+        if filtered:
+            self._save_seen_ids()
         
         # 우선순위(단계) 내림차순, 그 다음 시간 내림차순 정렬
         filtered.sort(key=lambda x: (x['priority'], x['time']), reverse=True)

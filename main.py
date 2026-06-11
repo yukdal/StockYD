@@ -23,7 +23,9 @@ if sys.stdout.encoding != 'utf-8':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 async def run_monitor():
-    print("🚀 실시간 주식선물 공시 모니터링 시작...")
+    import socket
+    hostname = socket.gethostname()
+    print(f"🚀 실시간 주식선물 공시 모니터링 시작... (Host: {hostname})")
     
     scraper = DisclosureScraper()
     logic = DisclosureLogic()
@@ -50,17 +52,22 @@ async def run_monitor():
                 filtered = logic.filter_disclosures(all_disclosures)
                 
                 # 3. 알림 전송
-                for disc in filtered:
-                    message = DisclosureFormatter.format_telegram_message(disc)
-                    success = await notifier.send_message(message, session)
-                    if success:
-                        # 콘솔 로그 색상 적용 (상승: 빨강, 하락: 파랑)
-                        color = "\033[91m" if disc['direction'] == "상승" else "\033[94m" if disc['direction'] == "하락" else "\033[0m"
-                        reset = "\033[0m"
-                        print(f"✅ {color}알림 전송 성공: {disc['corp_name']} ({disc['phase']}단계 {disc['direction']}){reset}")
-                    
-                    # 봇 차단 방지를 위한 미세 지연
-                    await asyncio.sleep(0.5)
+                if logic.is_first_ever_run:
+                    if filtered:
+                        print(f"⚠️ 최초 실행: {len(filtered)}개의 기존 공시 알림을 생략합니다 (텔레그램 스팸 제한 방지).")
+                        logic.is_first_ever_run = False
+                else:
+                    for disc in filtered:
+                        message = DisclosureFormatter.format_telegram_message(disc)
+                        success = await notifier.send_message(message, session)
+                        if success:
+                            # 콘솔 로그 색상 적용 (상승: 빨강, 하락: 파랑)
+                            color = "\033[91m" if disc['direction'] == "상승" else "\033[94m" if disc['direction'] == "하락" else "\033[0m"
+                            reset = "\033[0m"
+                            print(f"✅ {color}알림 전송 성공: {disc['corp_name']} ({disc['phase']}단계 {disc['direction']}){reset}")
+                        
+                        # 봇 차단 방지를 위한 미세 지연
+                        await asyncio.sleep(0.5)
                 
                 # 4. 폴링 주기 지연 (3~5초)
                 await asyncio.sleep(3)

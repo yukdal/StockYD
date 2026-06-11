@@ -9,9 +9,19 @@ from dotenv import load_dotenv
 
 import sys
 import traceback
+import socket
 
 # .env 파일 로드 (로컬 환경용)
 load_dotenv()
+
+# 단일 실행 잠금 (중복 봇 방지)
+try:
+    instance_lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    instance_lock.bind(('127.0.0.1', 49123)) # 임의의 포트 사용
+except socket.error:
+    print("❌ 이미 실행 중인 봇 프로세스가 있습니다! 좀비 봇이 존재합니다.")
+    print("❌ 실행을 중단합니다. 기존 프로세스를 먼저 완전히 종료해주세요.")
+    sys.exit(1)
 
 # 윈도우 터미널 인코딩 문제 해결 (UTF-8 강제 설정)
 if sys.stdout.encoding != 'utf-8':

@@ -19,12 +19,12 @@ fi
 
 # 3. 기존 실행 중인 봇 프로세스 안전 종료
 echo "🔫 기존 실행 중인 봇 프로세스 종료 중..."
-pkill -f main.py
+pkill -f stock_monitor.py
 sleep 2
 
 # 4. 백그라운드 정상 재실행
 echo "🌟 봇 백그라운드 실행 시작 (nohup)..."
-nohup ./venv/bin/python main.py > nohup.out 2>&1 &
+nohup ./venv/bin/python stock_monitor.py > nohup.out 2>&1 &
 
 echo "----------------------------------------------------"
 echo "✅ 배포 및 재실행이 완료되었습니다!"

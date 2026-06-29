@@ -29,11 +29,11 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 
 ### 3. 실행
 ```bash
-python main.py
+python stock_monitor.py
 ```
 
 ## 📂 파일 구조
-- `main.py`: 프로그램 실행 진입점 및 메인 루프.
+- `stock_monitor.py`: 프로그램 실행 진입점 및 메인 루프 (기존 main.py에서 프로세스 충돌 방지를 위해 변경).
 - `scraper.py`: KIND 및 DART 데이터 수집 모듈.
 - `logic.py`: 키워드 필터링 및 우선순위 정렬 로직.
 - `formatter.py`: 텔레그램 메시지 레이아웃 렌더링.

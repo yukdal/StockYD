@@ -9,7 +9,7 @@ class DisclosureLogic:
         self.pattern = re.compile(r"주식선물.*([23])단계.*가격제한폭\s*확대요건\s*도달|주식선물.*가격제한폭\s*확대요건\s*도달.*([23])단계")
         self.seen_ids = set()
         self.save_file = "seen_ids.json"
-        self.is_first_ever_run = not os.path.exists(self.save_file)
+        self.is_first_ever_run = True # 봇 재시작 시 과거 공시 폭탄 발송 방지를 위해 항상 True로 시작
         self._load_seen_ids()
 
     def _load_seen_ids(self):
@@ -20,7 +20,6 @@ class DisclosureLogic:
                     self.seen_ids = set(data)
             except Exception as e:
                 print(f"⚠️ seen_ids 로드 실패: {e}")
-                self.is_first_ever_run = True
 
     def _save_seen_ids(self):
         try:

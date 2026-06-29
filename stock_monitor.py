@@ -90,6 +90,16 @@ async def run_monitor():
                 # 매 루프 시작 시 새로운 채팅방 감지 및 등록
                 await notifier.auto_detect_chat_ids(session)
                 
+                # 주식장 열리는 시간(KST 기준 08:00 ~ 18:00) 여부 확인
+                from datetime import datetime, timezone, timedelta
+                kst = timezone(timedelta(hours=9))
+                now_kst = datetime.now(kst)
+                
+                # 주말(토, 일) 또는 평일 08:00~18:00 이외의 시간은 장 마감 시간으로 판단하여 크롤링 중단
+                if now_kst.weekday() >= 5 or not (8 <= now_kst.hour < 18):
+                    await asyncio.sleep(30) # 장 마감 시간대에는 30초 대기 후 스킵 (서버 자원 절약 및 심야 오작동 방지)
+                    continue
+                
                 # 1. 데이터 수집 (병렬 처리)
                 kind_task = scraper.fetch_kind(session)
                 dart_task = scraper.fetch_dart(session)
@@ -104,7 +114,9 @@ async def run_monitor():
                 if logic.is_first_ever_run:
                     if filtered:
                         print(f"⚠️ 최초 실행: {len(filtered)}개의 기존 공시 알림을 생략합니다 (텔레그램 스팸 제한 방지).")
-                        logic.is_first_ever_run = False
+                    else:
+                        print("⚠️ 최초 실행: 기존 공시 중 새로운 항목이 없습니다.")
+                    logic.is_first_ever_run = False
                 else:
                     for disc in filtered:
                         message = DisclosureFormatter.format_telegram_message(disc)

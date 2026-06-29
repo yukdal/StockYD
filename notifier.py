@@ -55,11 +55,36 @@ class TelegramNotifier:
                                     new_detected = True
                                     print(f"✨ [Telegram] 새로운 채팅방 감지 및 등록: {chat_title} ({chat_type}, ID: {chat_id})")
                                     
+                                    # 새 채팅방 감지 시 즉시 등록 완료 안내 메시지 전송
+                                    welcome_msg = f"✅ <b>[시스템 알림]</b>\n이 채팅방(<b>{chat_title}</b>)이 주식선물 실시간 공시 알림방으로 성공적으로 등록되었습니다.\n(앞으로 새로운 공시가 발생하면 즉시 알림이 발송됩니다.)"
+                                    await self._send_to_single_chat(chat_id, welcome_msg, session)
+                                    
                         if new_detected:
                             # .env 파일 업데이트 및 영구 저장
                             self._update_env_file()
         except Exception as e:
             print(f"⚠️ Telegram 자동 감지 오류: {e}")
+
+    async def _send_to_single_chat(self, chat_id, text, session):
+        """단일 채팅방으로 메시지 전송 헬퍼"""
+        if not self.token:
+            return False
+        payload = {
+            'chat_id': chat_id,
+            'text': text,
+            'parse_mode': 'HTML',
+            'disable_web_page_preview': False
+        }
+        try:
+            async with session.post(self.api_url, json=payload) as response:
+                if response.status != 200:
+                    err_text = await response.text()
+                    print(f"Telegram Welcome Error (chat_id: {chat_id}): {response.status} - {err_text}")
+                    return False
+                return True
+        except Exception as e:
+            print(f"Telegram Welcome Exception (chat_id: {chat_id}): {e}")
+            return False
 
     def _find_chats(self, data):
         """업데이트 데이터 내 모든 'chat' 객체를 재귀적으로 탐색하여 리스트로 반환"""

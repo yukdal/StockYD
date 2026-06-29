@@ -77,6 +77,10 @@ async def run_monitor():
         print("🔍 텔레그램 새 채팅방 감지 중...")
         await notifier.auto_detect_chat_ids(session)
         
+        # 봇 구동 시작 알림 전송
+        start_msg = f"🚀 <b>[시스템 알림]</b>\n주식선물 실시간 공시 모니터링 봇이 정상 작동을 시작했습니다.\n(서버 호스트: <code>{hostname}</code>)"
+        await notifier.send_message(start_msg, session)
+        
         if zombie_was_killed:
             msg = "🔫 <b>[시스템 알림]</b>\n새로운 봇이 실행되면서 기존에 켜져 있던 봇(좀비 봇)을 감지하고 자동으로 종료했습니다.\n(이제 알림이 중복으로 오지 않습니다.)"
             await notifier.send_message(msg, session)

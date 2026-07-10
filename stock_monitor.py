@@ -5,6 +5,7 @@ from scraper import DisclosureScraper
 from logic import DisclosureLogic
 from formatter import DisclosureFormatter
 from notifier import TelegramNotifier
+from krx_api import KRXOpenAPI  # KRX 공식 Open API 모듈 (전일 주식선물 매매정보 보강용)
 from dotenv import load_dotenv
 
 import sys
@@ -71,14 +72,30 @@ async def run_monitor():
     scraper = DisclosureScraper()
     logic = DisclosureLogic()
     notifier = TelegramNotifier()
+    krx = KRXOpenAPI()  # KRX 공식 API 객체 생성 (.env의 KRX_AUTH_KEY 자동 로드, 없으면 비활성)
     
     async with aiohttp.ClientSession() as session:
         # 프로그램 시작 시 1회 즉시 감지
         print("🔍 텔레그램 새 채팅방 감지 중...")
         await notifier.auto_detect_chat_ids(session)
         
+        # KRX 공식 API 연동 상태 확인 (인증키가 설정된 경우에만)
+        krx_status = "미설정 (알림은 정상 동작)"  # 기본 상태 문구
+        if krx.is_configured:                      # 인증키가 있으면 실제 연결 테스트
+            try:
+                test_days = krx._recent_business_days(max_back=3)   # 최근 영업일 3개 후보
+                test_rows = []                                       # 테스트 결과 담을 변수
+                for d in test_days:                                  # 날짜별로 시도
+                    test_rows = await krx.get_day_data(session, d)   # 데이터 조회
+                    if test_rows:                                    # 받으면 중단
+                        break
+                krx_status = f"✅ 연동 성공 ({len(test_rows)}개 종목 수신)" if test_rows else "⚠️ 인증키는 있으나 데이터 수신 실패"
+            except Exception as e:
+                krx_status = f"⚠️ 연결 오류: {e}"
+        print(f"📊 KRX 공식 API 상태: {krx_status}")
+
         # 봇 구동 시작 알림 전송
-        start_msg = f"🚀 <b>[시스템 알림]</b>\n주식선물 실시간 공시 모니터링 봇이 정상 작동을 시작했습니다.\n(서버 호스트: <code>{hostname}</code>)"
+        start_msg = f"🚀 <b>[시스템 알림]</b>\n주식선물 실시간 공시 모니터링 봇이 정상 작동을 시작했습니다.\n(서버 호스트: <code>{hostname}</code>)\n(KRX 공식 API: {krx_status})"
         await notifier.send_message(start_msg, session)
         
         if zombie_was_killed:
@@ -119,7 +136,13 @@ async def run_monitor():
                     logic.is_first_ever_run = False
                 else:
                     for disc in filtered:
-                        message = DisclosureFormatter.format_telegram_message(disc)
+                        # KRX 공식 API로 해당 종목의 전일 선물 매매정보 조회 (실패해도 알림은 그대로 전송)
+                        krx_info = None
+                        try:
+                            krx_info = await krx.get_futures_summary(session, disc['corp_name'])
+                        except Exception as e:
+                            print(f"⚠️ KRX 전일 데이터 조회 실패 (알림은 정상 전송): {e}")
+                        message = DisclosureFormatter.format_telegram_message(disc, krx_info)
                         success = await notifier.send_message(message, session)
                         if success:
                             # 콘솔 로그 색상 적용 (상승: 빨강, 하락: 파랑)

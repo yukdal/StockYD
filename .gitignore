@@ -14,3 +14,8 @@ env/
 # 에디터 설정
 .vscode/
 .idea/
+
+# 실행 중 생성되는 상태/로그 파일 (서버와 로컬이 각자 따로 유지해야 함 — git 충돌 방지)
+seen_ids.json
+*.pid
+nohup.out

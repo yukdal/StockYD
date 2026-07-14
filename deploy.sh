@@ -20,6 +20,7 @@ fi
 # 3. 기존 실행 중인 봇 프로세스 안전 종료
 echo "🔫 기존 실행 중인 봇 프로세스 종료 중..."
 pkill -f stock_monitor.py
+pkill -f main.py
 sleep 2
 
 # 4. 백그라운드 정상 재실행

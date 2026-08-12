@@ -102,6 +102,7 @@ STOCKYD_TAKEOVER=1 ./venv/bin/python stock_monitor.py
 - `notifier.py`: 텔레그램 전송 연동 모듈.
 - `krx_api.py`: KRX 공식 Open API 연동 모듈 (전일 주식선물 매매정보).
 - `test_krx_api.py`: KRX 인증키 연동 테스트 스크립트.
+- `test_telegram.py`: 텔레그램 토큰 유효성 및 채팅방 ID 확인 스크립트 (토큰은 `.env`에서 읽음).
 - `deploy.sh`: 서버 배포 스크립트 (git pull → 의존성 설치 → 재시작 → 기동 검증).
 - `install_service.sh`: systemd 서비스 등록 스크립트 (재부팅 시 자동 시작 설정).
 - `stock-monitor.service`: systemd 유닛 파일 템플릿 (`install_service.sh`가 경로/계정을 채워 설치).
@@ -109,4 +110,4 @@ STOCKYD_TAKEOVER=1 ./venv/bin/python stock_monitor.py
 
 ## ⚠️ 주의사항
 - **API 한도**: DART Open API는 일 10,000건의 호출 제한이 있으므로 폴링 주기를 적절히 유지하십시오 (기본 3초).
-- **보안**: `.env` 파일은 절대 공개 저장소에 업로드하지 마십시오.
+- **보안**: `.env` 파일은 절대 공개 저장소에 업로드하지 마십시오. 토큰·인증키를 코드에 직접 적지 말고 반드시 `.env`에서 읽으십시오. 실수로 커밋했다면 파일을 지우는 것만으로는 부족하며(git 히스토리에 남습니다), 해당 키를 즉시 폐기하고 재발급해야 합니다 — 텔레그램은 [@BotFather](https://t.me/BotFather)의 `/revoke`.

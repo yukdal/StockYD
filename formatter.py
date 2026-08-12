@@ -23,8 +23,8 @@ class DisclosureFormatter:
         phase_text = f"<b>{phase}단계</b>"
         
         message = (
-            f"{source_tag}\n"
-            f"{market}{corp_name} 주식선물 {phase_text} 가격제한폭 확대요건 도달({direction_text}) {alert_emoji}\n\n"
+            f"{source_tag}{direction_text}\n\n"
+            f"{market}{corp_name} 주식선물 {phase_text} 가격제한폭 확대요건 도달{alert_emoji}\n\n"
             f"일시: {now_kst.strftime('%Y-%m-%d')} {time_str}\n"
             f"링크: <a href='{link}'>상세보기</a> ✨"
         )

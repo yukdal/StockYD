@@ -3,6 +3,7 @@ import asyncio
 import os
 import stat
 import tempfile
+import time
 
 class TelegramNotifier:
     # 전송 실패 시 재시도 정책
@@ -18,11 +19,19 @@ class TelegramNotifier:
     # 이 경우 계속 재시도하면 정상 채팅방에 중복 발송만 유발하므로 '영구 실패'로 처리한다.
     PERMANENT_ERROR_STATUSES = frozenset({400, 403, 404})
 
+    # 새 채팅방 감지(getUpdates) 주기(초).
+    # 예전에는 감시 루프가 돌 때마다(약 3초) 호출해 텔레그램 API를 분당 20회 두드렸고,
+    # 실제 운영 중 getUpdates가 계속 타임아웃되는 현상이 발생했다.
+    # 채팅방 등록은 즉시성이 필요한 기능이 아니므로 넉넉한 간격으로 낮춘다.
+    CHAT_DETECT_INTERVAL = 300   # 5분
+    CHAT_DETECT_TIMEOUT = 10     # 호출 빈도가 낮아진 만큼 여유를 준다
+
     def __init__(self, token=None, chat_id=None):
         self.token = token or os.getenv('TELEGRAM_BOT_TOKEN')
         raw_chat_id = chat_id or os.getenv('TELEGRAM_CHAT_ID')
         self.api_url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         self.offset = None
+        self._last_detect_at = None  # 마지막 채팅방 감지 시각 (호출 주기 제한용)
         
         self.chat_ids = []
         if raw_chat_id:
@@ -36,50 +45,75 @@ class TelegramNotifier:
         # 중복 제거 (순서 유지)
         self.chat_ids = list(dict.fromkeys(self.chat_ids))
 
-    async def auto_detect_chat_ids(self, session):
-        """텔레그램 getUpdates API를 사용하여 새로운 채팅방 ID를 자동 감지 및 등록"""
+    async def auto_detect_chat_ids(self, session, force=False):
+        """텔레그램 getUpdates API를 사용하여 새로운 채팅방 ID를 자동 감지 및 등록
+
+        CHAT_DETECT_INTERVAL보다 자주 호출되면 실제 요청 없이 즉시 반환한다.
+        (감시 루프가 매 주기 호출해도 안전하도록 호출 주기 제한을 이 안에 둔다.)
+        force=True로 호출하면 주기와 무관하게 즉시 조회한다.
+        """
         if not self.token:
             return
-            
+
+        # 시스템 시간 변경에 영향받지 않도록 monotonic 시계를 사용
+        now = time.monotonic()
+        if not force and self._last_detect_at is not None and \
+                now - self._last_detect_at < self.CHAT_DETECT_INTERVAL:
+            return
+        self._last_detect_at = now
+
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         params = {}
         if self.offset is not None:
             params['offset'] = self.offset
-            
+
         try:
-            async with session.get(url, params=params, timeout=5) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('ok') and data.get('result'):
-                        updates = data['result']
-                        
-                        # 다음 요청을 위한 offset 업데이트
-                        self.offset = max(u['update_id'] for u in updates) + 1
-                        
-                        new_detected = False
-                        for update in updates:
-                            # 업데이트 내부의 모든 chat 객체 재귀 탐색
-                            chats = self._find_chats(update)
-                            
-                            for chat in chats:
-                                chat_id = str(chat['id'])
-                                chat_title = chat.get('title') or chat.get('username') or chat.get('first_name') or "이름 없음"
-                                chat_type = chat.get('type', 'unknown')
-                                
-                                if chat_id not in self.chat_ids:
-                                    self.chat_ids.append(chat_id)
-                                    new_detected = True
-                                    print(f"✨ [Telegram] 새로운 채팅방 감지 및 등록: {chat_title} ({chat_type}, ID: {chat_id})")
-                                    
-                                    # 새 채팅방 감지 시 즉시 등록 완료 안내 메시지 전송
-                                    welcome_msg = f"✅ <b>[시스템 알림]</b>\n이 채팅방(<b>{chat_title}</b>)이 주식선물 실시간 공시 알림방으로 성공적으로 등록되었습니다.\n(앞으로 새로운 공시가 발생하면 즉시 알림이 발송됩니다.)"
-                                    await self._send_to_single_chat(chat_id, welcome_msg, session)
-                                    
-                        if new_detected:
-                            # .env 파일 업데이트 및 영구 저장
-                            self._update_env_file()
+            async with session.get(url, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=self.CHAT_DETECT_TIMEOUT)) as response:
+                if response.status != 200:
+                    # 예전에는 200이 아니면 아무 기록 없이 넘어가 원인을 알 수 없었다.
+                    err_text = await response.text()
+                    print(f"⚠️ Telegram 채팅방 감지 실패: HTTP {response.status} - {err_text[:200]}")
+                    return
+
+                data = await response.json()
+                updates = data.get('result') if data.get('ok') else None
+                if not updates:
+                    return
+
+                # 다음 요청을 위한 offset 업데이트
+                self.offset = max(u['update_id'] for u in updates) + 1
+
+                new_detected = False
+                for update in updates:
+                    # 업데이트 내부의 모든 chat 객체 재귀 탐색
+                    for chat in self._find_chats(update):
+                        chat_id = str(chat['id'])
+                        chat_title = chat.get('title') or chat.get('username') or chat.get('first_name') or "이름 없음"
+                        chat_type = chat.get('type', 'unknown')
+
+                        if chat_id not in self.chat_ids:
+                            self.chat_ids.append(chat_id)
+                            new_detected = True
+                            print(f"✨ [Telegram] 새로운 채팅방 감지 및 등록: {chat_title} ({chat_type}, ID: {chat_id})")
+
+                            # 새 채팅방 감지 시 즉시 등록 완료 안내 메시지 전송
+                            welcome_msg = f"✅ <b>[시스템 알림]</b>\n이 채팅방(<b>{chat_title}</b>)이 주식선물 실시간 공시 알림방으로 성공적으로 등록되었습니다.\n(앞으로 새로운 공시가 발생하면 즉시 알림이 발송됩니다.)"
+                            await self._send_to_single_chat(chat_id, welcome_msg, session)
+
+                if new_detected:
+                    # .env 파일 업데이트 및 영구 저장
+                    self._update_env_file()
+
+        except asyncio.TimeoutError:
+            # 타임아웃 예외는 str()이 비어 있어, 그대로 출력하면 원인을 알 수 없는
+            # "⚠️ Telegram 자동 감지 오류: " 같은 빈 메시지가 남는다.
+            print(f"⚠️ Telegram 채팅방 감지 시간 초과 ({self.CHAT_DETECT_TIMEOUT}초). "
+                  f"{self.CHAT_DETECT_INTERVAL // 60}분 뒤 다시 시도합니다.")
         except Exception as e:
-            print(f"⚠️ Telegram 자동 감지 오류: {e}")
+            # 예외 종류를 함께 남긴다 (타임아웃·연결 오류 계열은 메시지가 비어 있다)
+            detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            print(f"⚠️ Telegram 자동 감지 오류: {detail}")
 
     async def _send_once(self, chat_id, text, session):
         """단일 채팅방으로 1회 전송 시도.

@@ -120,6 +120,11 @@ KIND는 HTML을 파싱해서 공시를 읽어오므로, KRX가 페이지 구조�
 
 임계 시간은 `scrape_watchdog.py`의 `DEFAULT_THRESHOLD`, 재알림 간격은 `DEFAULT_REWARN_INTERVAL`에서 조정할 수 있습니다.
 
+### 새 채팅방 자동 감지
+봇이 참여한 새 채팅방을 감지해 `TELEGRAM_CHAT_ID`에 자동 등록합니다. 조회(`getUpdates`)는 **5분 간격**으로 수행합니다(`notifier.py`의 `CHAT_DETECT_INTERVAL`). 감시 루프가 매 주기 호출해도 안전하도록, 호출 주기 제한은 함수 안에 있습니다.
+
+> 예전에는 감시 루프가 돌 때마다(약 3초) 호출해 텔레그램 API를 분당 20회 두드렸고, 실제 운영 중 `getUpdates`가 계속 타임아웃되며 로그에 원인 없는 경고가 반복해서 쌓였습니다.
+
 ### 요청 타임아웃
 KIND·DART 요청에는 15초 타임아웃이 적용됩니다(`scraper.py`의 `REQUEST_TIMEOUT`). 지정하지 않으면 aiohttp 기본값인 5분이 적용되어, 응답이 늦어질 때 3초 주기의 감시 루프가 사실상 정지합니다. 타임아웃된 요청은 '수집 실패'로 기록되므로 위의 이상 감지에도 반영됩니다.
 

@@ -46,6 +46,39 @@ KRX_AUTH_KEY=your_krx_auth_key_here
 python stock_monitor.py
 ```
 
+## 🖥 서버 배포 (OCI)
+
+### 최초 1회: systemd 서비스 등록 (권장)
+서버에 접속한 뒤 저장소 디렉토리에서 아래 명령을 실행하십시오.
+
+```bash
+bash install_service.sh
+```
+
+가상환경 생성부터 서비스 등록·기동까지 자동으로 처리하며, **등록 후에는 서버를 재부팅해도 봇이 자동으로 다시 실행**됩니다. 봇이 비정상 종료되어도 10초 뒤 자동 재시작됩니다.
+
+봇을 실행할 계정은 저장소 소유자로 자동 판별됩니다. 직접 지정하려면:
+
+```bash
+STOCKYD_USER=ubuntu bash install_service.sh
+```
+
+### 코드 변경 후 배포
+```bash
+bash deploy.sh
+```
+
+`git pull` → 의존성 설치 → 재시작 → **기동 검증**까지 수행합니다. systemd 서비스가 등록되어 있으면 `systemctl restart`로, 없으면 기존 `nohup` 방식으로 실행합니다. 봇이 기동에 실패하면 로그를 출력하고 종료 코드 1로 끝나므로 배포 성공 여부를 바로 알 수 있습니다.
+
+### 상태 및 로그 확인
+```bash
+systemctl status stockyd        # 서비스 상태
+journalctl -u stockyd -f        # 실시간 로그
+sudo systemctl restart stockyd  # 수동 재시작
+```
+
+> systemd를 쓰지 않는 경우(`nohup` 방식) 로그는 `nohup.out`에 쌓이며 `tail -f nohup.out`으로 확인합니다.
+
 ## 📂 파일 구조
 - `stock_monitor.py`: 프로그램 실행 진입점 및 메인 루프 (기존 main.py에서 프로세스 충돌 방지를 위해 변경).
 - `scraper.py`: KIND 및 DART 데이터 수집 모듈.
@@ -54,6 +87,10 @@ python stock_monitor.py
 - `notifier.py`: 텔레그램 전송 연동 모듈.
 - `krx_api.py`: KRX 공식 Open API 연동 모듈 (전일 주식선물 매매정보).
 - `test_krx_api.py`: KRX 인증키 연동 테스트 스크립트.
+- `deploy.sh`: 서버 배포 스크립트 (git pull → 의존성 설치 → 재시작 → 기동 검증).
+- `install_service.sh`: systemd 서비스 등록 스크립트 (재부팅 시 자동 시작 설정).
+- `stockyd.service`: systemd 유닛 파일 템플릿 (`install_service.sh`가 경로/계정을 채워 설치).
+- `requirements.txt`: 의존성 패키지 목록.
 
 ## ⚠️ 주의사항
 - **API 한도**: DART Open API는 일 10,000건의 호출 제한이 있으므로 폴링 주기를 적절히 유지하십시오 (기본 3초).

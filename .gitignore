@@ -19,3 +19,4 @@ env/
 seen_ids.json
 *.pid
 nohup.out
+.last_startup_notice

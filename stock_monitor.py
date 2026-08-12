@@ -18,42 +18,98 @@ import time
 # .env 파일 로드 (로컬 환경용)
 load_dotenv()
 
-# 기존 좀비 봇 감지 및 자동 종료 로직 (다른 봇과 충돌 방지용 독립 PID 파일명 사용)
-zombie_was_killed = False
+# ---------------------------------------------------------------------------
+# 단일 실행 보장 ('먼저 잡은 쪽이 이긴다')
+#
+# 예전에는 PID 파일을 읽어 기존 봇에 SIGTERM을 보내 자리를 빼앗는 방식이었다.
+# 이 방식은 systemd(Restart=always)처럼 프로세스를 자동으로 되살리는 환경에서
+# 두 인스턴스가 서로를 죽이고 되살아나는 무한 루프를 만든다.
+#   A 실행 중 → B가 A를 죽임 → supervisor가 A를 되살림 → A가 B를 죽임 → 무한 반복
+# (실제로 재시작마다 텔레그램 시작 알림이 발송되어 알림 폭탄이 발생했다.)
+#
+# 그래서 기본 동작을 '이미 실행 중이면 새 프로세스가 조용히 물러난다'로 바꾼다.
+# 기존의 강제 인수 동작이 필요한 경우에만 STOCKYD_TAKEOVER=1 로 명시적으로 켠다.
+# ---------------------------------------------------------------------------
+
+# 이미 다른 봇이 실행 중이라 종료할 때 쓰는 종료 코드.
+# stockyd.service의 RestartPreventExitStatus 값과 반드시 일치해야 한다
+# (systemd가 이 코드로 끝난 서비스는 재시작하지 않도록).
+EXIT_ALREADY_RUNNING = 3
+
+LOCK_PORT = 51234  # 다른 OCI 봇과 겹치지 않는 고유 포트
 pid_file = "stock_monitor.pid"
 current_pid = os.getpid()
+zombie_was_killed = False
 
-if os.path.exists(pid_file):
+
+def _acquire_instance_lock():
+    """단일 실행 잠금 획득 시도. 성공하면 소켓 객체, 이미 점유 중이면 None."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(('127.0.0.1', LOCK_PORT))
+        return sock
+    except socket.error:
+        sock.close()
+        return None
+
+
+instance_lock = _acquire_instance_lock()
+
+# STOCKYD_TAKEOVER=1 인 경우에만 기존 봇을 종료하고 자리를 넘겨받는다.
+# (수동으로 봇을 교체할 때만 사용. supervisor가 관리하는 환경에서는 절대 켜지 말 것.)
+if instance_lock is None and os.getenv('STOCKYD_TAKEOVER') == '1':
     try:
         with open(pid_file, 'r') as f:
             old_pid = int(f.read().strip())
-        
         if old_pid != current_pid:
-            try:
-                os.kill(old_pid, signal.SIGTERM)
+            os.kill(old_pid, signal.SIGTERM)
+            print(f"🔫 기존 봇(PID: {old_pid})에 종료 신호를 보냈습니다. 자리를 넘겨받는 중...")
+            # 기존 봇이 잠금을 놓을 때까지 최대 10초 대기
+            for _ in range(10):
                 time.sleep(1)
-                zombie_was_killed = True
-                print(f"🔫 기존 좀비 봇(PID: {old_pid})을 성공적으로 자동 종료했습니다.")
-            except OSError:
-                pass # 프로세스가 이미 없거나 종료할 권한이 없음
-    except Exception:
-        pass
+                instance_lock = _acquire_instance_lock()
+                if instance_lock is not None:
+                    zombie_was_killed = True
+                    break
+    except (OSError, ValueError, FileNotFoundError):
+        pass  # PID 파일이 없거나 이미 종료된 프로세스
 
-# 현재 내 PID 저장
+if instance_lock is None:
+    print("ℹ️ 이미 실행 중인 봇이 있어 이 프로세스는 종료합니다. (중복 실행 방지)")
+    print("   기존 봇을 교체하려면 먼저 종료하거나 STOCKYD_TAKEOVER=1 로 실행하세요.")
+    sys.exit(EXIT_ALREADY_RUNNING)
+
+# 잠금을 확보한 뒤에만 PID 파일을 갱신 (실행 중인 봇의 PID만 기록되도록)
 try:
     with open(pid_file, 'w') as f:
         f.write(str(current_pid))
 except Exception:
     pass
 
-# 단일 실행 잠금 (중복 봇 방지 및 다른 OCI 봇과 포트 충돌 방지)
-try:
-    instance_lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    instance_lock.bind(('127.0.0.1', 51234)) # 고유 포트 사용
-except socket.error:
-    print("❌ 이미 실행 중인 봇 프로세스가 있습니다! 좀비 봇이 존재합니다.")
-    print("❌ 실행을 중단합니다. 기존 프로세스를 먼저 완전히 종료해주세요.")
-    sys.exit(1)
+# ---------------------------------------------------------------------------
+# 시작 알림 도배 방지
+# 봇이 크래시 루프에 빠지면 재시작마다 시작 알림이 나가 알림방이 도배된다.
+# 최근에 이미 보냈다면 이번 시작 알림은 생략한다 (감시 기능 자체는 정상 동작).
+# ---------------------------------------------------------------------------
+STARTUP_NOTICE_FILE = ".last_startup_notice"
+STARTUP_NOTICE_INTERVAL = 600  # 초 단위 (10분)
+
+
+def _should_send_startup_notice():
+    """직전 시작 알림으로부터 STARTUP_NOTICE_INTERVAL이 지났으면 True."""
+    try:
+        if time.time() - os.path.getmtime(STARTUP_NOTICE_FILE) < STARTUP_NOTICE_INTERVAL:
+            return False
+    except OSError:
+        pass  # 파일이 없으면 첫 실행이므로 그대로 전송
+
+    try:
+        with open(STARTUP_NOTICE_FILE, 'w') as f:
+            f.write(str(int(time.time())))
+    except Exception:
+        pass  # 기록에 실패해도 알림 전송은 막지 않는다
+    return True
+
 
 # 윈도우 터미널 인코딩 문제 해결 (UTF-8 강제 설정)
 if sys.stdout.encoding != 'utf-8':
@@ -95,12 +151,18 @@ async def run_monitor():
         print(f"📊 KRX 공식 API 상태: {krx_status}")
 
         # 봇 구동 시작 알림 전송
-        start_msg = f"🚀 <b>[시스템 알림]</b>\n주식선물 실시간 공시 모니터링 봇이 정상 작동을 시작했습니다.\n(서버 호스트: <code>{hostname}</code>)\n(KRX 공식 API: {krx_status})"
-        await notifier.send_message(start_msg, session)
-        
-        if zombie_was_killed:
-            msg = "🔫 <b>[시스템 알림]</b>\n새로운 봇이 실행되면서 기존에 켜져 있던 봇(좀비 봇)을 감지하고 자동으로 종료했습니다.\n(이제 알림이 중복으로 오지 않습니다.)"
-            await notifier.send_message(msg, session)
+        # 봇이 반복 재시작(크래시 루프)에 빠지면 시작 알림이 그대로 알림 폭탄이 되므로,
+        # 최근에 이미 보냈다면 이번 알림은 건너뛴다. 모니터링 동작 자체에는 영향이 없다.
+        if _should_send_startup_notice():
+            start_msg = f"🚀 <b>[시스템 알림]</b>\n주식선물 실시간 공시 모니터링 봇이 정상 작동을 시작했습니다.\n(서버 호스트: <code>{hostname}</code>)\n(KRX 공식 API: {krx_status})"
+            await notifier.send_message(start_msg, session)
+
+            if zombie_was_killed:
+                msg = "🔫 <b>[시스템 알림]</b>\n새로운 봇이 실행되면서 기존에 켜져 있던 봇(좀비 봇)을 감지하고 자동으로 종료했습니다.\n(이제 알림이 중복으로 오지 않습니다.)"
+                await notifier.send_message(msg, session)
+        else:
+            print(f"⏭ 최근 {STARTUP_NOTICE_INTERVAL // 60}분 이내에 시작 알림을 이미 보내 이번에는 생략합니다. "
+                  f"(반복 재시작 시 알림 폭탄 방지)")
         
         while True:
             try:

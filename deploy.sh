@@ -2,7 +2,7 @@
 #
 # OCI 서버 자동 배포 및 재실행 스크립트
 #
-# systemd 서비스(stockyd)가 설치되어 있으면 systemctl로 재시작하고,
+# systemd 서비스(stock-monitor)가 설치되어 있으면 systemctl로 재시작하고,
 # 없으면 기존 방식대로 nohup 백그라운드로 실행합니다.
 # 어느 쪽이든 재실행 후 봇이 실제로 살아있는지 검증한 뒤 종료합니다.
 #
@@ -10,7 +10,7 @@
 
 set -u
 
-SERVICE_NAME="stockyd"
+SERVICE_NAME="stock-monitor"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
@@ -113,19 +113,27 @@ echo "ℹ️ systemd 서비스가 등록되어 있지 않아 nohup 방식으로 
 echo "👉 재부팅 후 자동 시작을 원하시면 'bash install_service.sh'를 한 번 실행해주세요."
 
 # 기존 실행 중인 봇 프로세스 안전 종료 (SIGTERM → 최대 10초 대기 → SIGKILL)
-if pgrep -f "stock_monitor.py" >/dev/null 2>&1 || pgrep -f "main\.py" >/dev/null 2>&1; then
+#
+# ⚠️ 반드시 이 프로젝트 경로($SCRIPT_DIR)가 포함된 프로세스만 종료해야 한다.
+# 같은 서버에 다른 봇들이 함께 돌고 있어(예: ~/KStockDB/main.py, ~/stock_bot/swing_main.py)
+# 'pkill -f main.py' 같은 넓은 패턴을 쓰면 무관한 프로젝트까지 죽인다.
+# main.py는 os.system으로 stock_monitor.py를 실행하므로 부모까지 함께 정리한다.
+# (pgrep/pkill은 확장 정규식(ERE)을 사용한다)
+KILL_PATTERN="$SCRIPT_DIR/.*(stock_monitor\.py|main\.py)"
+
+if pgrep -f "$KILL_PATTERN" >/dev/null 2>&1; then
     echo "🔫 기존 실행 중인 봇 프로세스 종료 중..."
-    pkill -f "stock_monitor.py" 2>/dev/null
-    pkill -f "main\.py" 2>/dev/null
+    echo "   (대상: $SCRIPT_DIR 경로의 프로세스만)"
+    pkill -f "$KILL_PATTERN" 2>/dev/null
 
     for _ in $(seq 1 10); do
-        pgrep -f "stock_monitor.py" >/dev/null 2>&1 || break
+        pgrep -f "$KILL_PATTERN" >/dev/null 2>&1 || break
         sleep 1
     done
 
-    if pgrep -f "stock_monitor.py" >/dev/null 2>&1; then
+    if pgrep -f "$KILL_PATTERN" >/dev/null 2>&1; then
         echo "   정상 종료되지 않아 강제 종료합니다."
-        pkill -9 -f "stock_monitor.py" 2>/dev/null
+        pkill -9 -f "$KILL_PATTERN" 2>/dev/null
         sleep 1
     fi
     echo "   기존 프로세스 종료 완료."

@@ -51,6 +51,8 @@ python stock_monitor.py
 ### 최초 1회: systemd 서비스 등록 (권장)
 서버에 접속한 뒤 저장소 디렉토리에서 아래 명령을 실행하십시오.
 
+> ⚠️ 봇을 실행하는 서비스는 **반드시 하나만** 있어야 합니다. 서로 다른 이름의 서비스가 각자 봇을 띄우면 두 인스턴스가 충돌합니다. `install_service.sh`는 이 디렉토리를 관리 중인 다른 서비스가 있으면 설치를 중단하고 안내합니다.
+
 ```bash
 bash install_service.sh
 ```
@@ -72,9 +74,9 @@ bash deploy.sh
 
 ### 상태 및 로그 확인
 ```bash
-systemctl status stockyd        # 서비스 상태
-journalctl -u stockyd -f        # 실시간 로그
-sudo systemctl restart stockyd  # 수동 재시작
+systemctl status stock-monitor        # 서비스 상태
+journalctl -u stock-monitor -f        # 실시간 로그
+sudo systemctl restart stock-monitor  # 수동 재시작
 ```
 
 > systemd를 쓰지 않는 경우(`nohup` 방식) 로그는 `nohup.out`에 쌓이며 `tail -f nohup.out`으로 확인합니다.
@@ -102,7 +104,7 @@ STOCKYD_TAKEOVER=1 ./venv/bin/python stock_monitor.py
 - `test_krx_api.py`: KRX 인증키 연동 테스트 스크립트.
 - `deploy.sh`: 서버 배포 스크립트 (git pull → 의존성 설치 → 재시작 → 기동 검증).
 - `install_service.sh`: systemd 서비스 등록 스크립트 (재부팅 시 자동 시작 설정).
-- `stockyd.service`: systemd 유닛 파일 템플릿 (`install_service.sh`가 경로/계정을 채워 설치).
+- `stock-monitor.service`: systemd 유닛 파일 템플릿 (`install_service.sh`가 경로/계정을 채워 설치).
 - `requirements.txt`: 의존성 패키지 목록.
 
 ## ⚠️ 주의사항

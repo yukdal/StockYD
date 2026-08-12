@@ -11,14 +11,22 @@ class DisclosureScraper:
 
     def __init__(self, dart_api_key=None):
         self.dart_api_key = dart_api_key or os.getenv('DART_API_KEY')
+        # 직전 KIND 수집 결과 요약 {'rows': 파싱 건수, 'http_ok': 응답 수신 여부}
+        self.last_kind_stats = {'rows': 0, 'http_ok': False}
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Referer': 'https://kind.krx.co.kr/disclosure/todaydisclosure.do'
         }
 
     async def fetch_kind(self, session):
-        """KIND 오늘의 공시 스크래핑 (코스피, 코스닥, 파생상품 시장)"""
+        """KIND 오늘의 공시 스크래핑 (코스피, 코스닥, 파생상품 시장)
+
+        수집 결과 요약을 self.last_kind_stats에 남긴다.
+        '응답은 받았는데 0건'(구조 변경 의심)과 '요청 자체가 실패'(네트워크/차단)를
+        구분해야 감시(watchdog) 쪽에서 적절한 경고를 낼 수 있다.
+        """
         all_kind_disclosures = []
+        http_ok = False  # 세 시장 중 하나라도 정상 응답을 받았는지
         # marketType 1: 유가증권, 2: 코스닥, 3: 파생상품
         for m_type in ['1', '2', '3']:
             payload = {
@@ -34,6 +42,7 @@ class DisclosureScraper:
             try:
                 async with session.post(self.KIND_URL, data=payload, headers=self.headers) as response:
                     if response.status == 200:
+                        http_ok = True
                         html = await response.text()
                         disclosures = self._parse_kind(html, m_type)
                         all_kind_disclosures.extend(disclosures)
@@ -41,10 +50,11 @@ class DisclosureScraper:
                         print(f"KIND Error (Market {m_type}): {response.status}")
             except Exception as e:
                 print(f"KIND Fetch Exception (Market {m_type}): {e}")
-            
+
             # 대량 요청 방지 및 안정성을 위한 짧은 지연
             await asyncio.sleep(0.2)
-            
+
+        self.last_kind_stats = {'rows': len(all_kind_disclosures), 'http_ok': http_ok}
         return all_kind_disclosures
 
     def _parse_kind(self, html, market_type_id):

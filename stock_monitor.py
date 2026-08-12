@@ -6,6 +6,7 @@ from logic import DisclosureLogic
 from formatter import DisclosureFormatter
 from notifier import TelegramNotifier
 from krx_api import KRXOpenAPI  # KRX 공식 Open API 모듈 (전일 주식선물 매매정보 보강용)
+from scrape_watchdog import ScrapeWatchdog, build_warning_message, build_recovery_message
 from dotenv import load_dotenv
 
 import sys
@@ -94,6 +95,10 @@ except Exception:
 STARTUP_NOTICE_FILE = ".last_startup_notice"
 STARTUP_NOTICE_INTERVAL = 600  # 초 단위 (10분)
 
+# 알림 전송에 실패했을 때 다음 감시 주기까지 쉬는 시간(초).
+# 실패 직후 3초 만에 다시 시도하면 같은 이유로 실패하며 텔레그램 API만 두드리게 된다.
+SEND_RETRY_COOLDOWN = 30
+
 
 def _should_send_startup_notice():
     """직전 시작 알림으로부터 STARTUP_NOTICE_INTERVAL이 지났으면 True."""
@@ -129,6 +134,7 @@ async def run_monitor():
     logic = DisclosureLogic()
     notifier = TelegramNotifier()
     krx = KRXOpenAPI()  # KRX 공식 API 객체 생성 (.env의 KRX_AUTH_KEY 자동 로드, 없으면 비활성)
+    kind_watchdog = ScrapeWatchdog()  # KIND 수집이 조용히 고장난 상태를 감시
     
     async with aiohttp.ClientSession() as session:
         # 프로그램 시작 시 1회 즉시 감지
@@ -185,14 +191,35 @@ async def run_monitor():
                 
                 results = await asyncio.gather(kind_task, dart_task)
                 all_disclosures = results[0] + results[1]
-                
+
+                # 1-1. 수집기 상태 감시
+                # KIND는 HTML 파싱이라 페이지 구조가 바뀌면 예외 없이 빈 목록만 돌려준다.
+                # 그 상태로 두면 봇은 살아 있는데 아무것도 탐지하지 못하므로, 이상이
+                # 일정 시간 지속되면 알림방으로 알린다.
+                kind_stats = scraper.last_kind_stats
+                watch_signal = kind_watchdog.record(kind_stats['rows'], kind_stats['http_ok'])
+                if watch_signal:
+                    action, detail = watch_signal
+                    if action == 'warn':
+                        minutes = kind_watchdog.elapsed_minutes()
+                        print(f"⚠️ 수집 이상 감지({detail}): {minutes}분째 지속 — 경고 알림을 보냅니다.")
+                        await notifier.send_message(build_warning_message(detail, minutes), session)
+                    elif action == 'recover':
+                        print(f"✅ 수집이 정상으로 돌아왔습니다 ({detail}건 수신).")
+                        await notifier.send_message(build_recovery_message(detail), session)
+
                 # 2. 필터링 및 우선순위 정렬
                 filtered = logic.filter_disclosures(all_disclosures)
                 
                 # 3. 알림 전송
+                send_failed = False  # 이번 주기에 재시도가 필요한 실패가 있었는지
+
                 if logic.is_first_ever_run:
                     if filtered:
                         print(f"⚠️ 최초 실행: {len(filtered)}개의 기존 공시 알림을 생략합니다 (텔레그램 스팸 제한 방지).")
+                        # 보내지는 않지만 '이미 처리한 공시'로 기록해 다음 주기에 다시 뜨지 않게 한다
+                        for disc in filtered:
+                            logic.mark_sent(disc)
                     else:
                         print("⚠️ 최초 실행: 기존 공시 중 새로운 항목이 없습니다.")
                     logic.is_first_ever_run = False
@@ -206,17 +233,31 @@ async def run_monitor():
                             print(f"⚠️ KRX 전일 데이터 조회 실패 (알림은 정상 전송): {e}")
                         message = DisclosureFormatter.format_telegram_message(disc, krx_info)
                         success = await notifier.send_message(message, session)
+
                         if success:
+                            # 전송에 성공한 뒤에야 '본 공시'로 기록한다.
+                            # 기록 전에 실패하면 다음 주기에 다시 후보로 올라와 재시도된다.
+                            logic.mark_sent(disc)
                             # 콘솔 로그 색상 적용 (상승: 빨강, 하락: 파랑)
                             color = "\033[91m" if disc['direction'] == "상승" else "\033[94m" if disc['direction'] == "하락" else "\033[0m"
                             reset = "\033[0m"
                             print(f"✅ {color}알림 전송 성공: {disc['corp_name']} ({disc['phase']}단계 {disc['direction']}){reset}")
-                        
+                        else:
+                            send_failed = True
+                            print(f"🔁 전송 실패로 기록하지 않았습니다. 다음 주기에 다시 시도합니다: "
+                                  f"{disc['corp_name']} ({disc['phase']}단계 {disc['direction']})")
+
                         # 봇 차단 방지를 위한 미세 지연
                         await asyncio.sleep(0.5)
-                
-                # 4. 폴링 주기 지연 (3~5초)
-                await asyncio.sleep(3)
+
+                # 4. 폴링 주기 지연
+                # 전송에 실패했다면 곧바로 다시 시도해봐야 같은 이유로 실패할 가능성이 크고,
+                # 텔레그램 API만 계속 두드리게 되므로 잠시 길게 쉬었다가 재시도한다.
+                if send_failed:
+                    print(f"⏳ 전송 실패가 있어 {SEND_RETRY_COOLDOWN}초 후 재시도합니다.")
+                    await asyncio.sleep(SEND_RETRY_COOLDOWN)
+                else:
+                    await asyncio.sleep(3)
                 
             except Exception as e:
                 print(f"❌ 루프 오류 발생: {e}")

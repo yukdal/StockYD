@@ -103,6 +103,23 @@ STOCKYD_TAKEOVER=1 ./venv/bin/python stock_monitor.py
 
 > 예전에는 전송 전에 '본 공시'로 기록했기 때문에, 전송이 실패하면 다음 주기에 중복으로 걸러지면서 해당 알림이 영영 유실됐습니다.
 
+### 수집 이상 감지
+KIND는 HTML을 파싱해서 공시를 읽어오므로, KRX가 페이지 구조를 바꾸면 **예외 없이 빈 목록만 계속 반환**합니다. 이 경우 프로세스는 멀쩡히 살아 있고 `systemctl status`도 정상이지만 실제로는 아무 공시도 탐지하지 못합니다.
+
+이를 감지하기 위해 장 시간 중 수집 결과를 지켜보다가, 아래 상태가 **30분 이상 지속되면 알림방으로 경고**를 보냅니다.
+
+| 상태 | 판정 | 의미 |
+| --- | --- | --- |
+| 응답은 정상인데 파싱 0건 | `empty` | KIND 페이지 구조 변경 의심 |
+| 요청 자체가 실패 | `fetch` | 네트워크 장애 또는 접속 차단 |
+
+- 일시적인 0건(개장 직후 등)은 30분을 넘지 않으므로 경고하지 않습니다.
+- 문제가 계속되면 6시간마다 다시 알립니다.
+- 정상으로 돌아오면 복구 알림을 1회 보냅니다.
+- 장 마감 후의 공백은 지속 시간에 누적되지 않습니다.
+
+임계 시간은 `scrape_watchdog.py`의 `DEFAULT_THRESHOLD`, 재알림 간격은 `DEFAULT_REWARN_INTERVAL`에서 조정할 수 있습니다.
+
 ## 📂 파일 구조
 - `stock_monitor.py`: 프로그램 실행 진입점 및 메인 루프 (기존 main.py에서 프로세스 충돌 방지를 위해 변경).
 - `scraper.py`: KIND 및 DART 데이터 수집 모듈.
@@ -110,6 +127,7 @@ STOCKYD_TAKEOVER=1 ./venv/bin/python stock_monitor.py
 - `formatter.py`: 텔레그램 메시지 레이아웃 렌더링.
 - `notifier.py`: 텔레그램 전송 연동 모듈.
 - `krx_api.py`: KRX 공식 Open API 연동 모듈 (전일 주식선물 매매정보).
+- `scrape_watchdog.py`: 수집기가 조용히 고장난 상태(파싱 0건, 수집 실패)를 감지하는 모듈.
 - `test_krx_api.py`: KRX 인증키 연동 테스트 스크립트.
 - `test_telegram.py`: 텔레그램 토큰 유효성 및 채팅방 ID 확인 스크립트 (토큰은 `.env`에서 읽음).
 - `deploy.sh`: 서버 배포 스크립트 (git pull → 의존성 설치 → 재시작 → 기동 검증).

@@ -6,6 +6,7 @@ from logic import DisclosureLogic
 from formatter import DisclosureFormatter
 from notifier import TelegramNotifier
 from krx_api import KRXOpenAPI  # KRX 공식 Open API 모듈 (전일 주식선물 매매정보 보강용)
+from scrape_watchdog import ScrapeWatchdog, build_warning_message, build_recovery_message
 from dotenv import load_dotenv
 
 import sys
@@ -133,6 +134,7 @@ async def run_monitor():
     logic = DisclosureLogic()
     notifier = TelegramNotifier()
     krx = KRXOpenAPI()  # KRX 공식 API 객체 생성 (.env의 KRX_AUTH_KEY 자동 로드, 없으면 비활성)
+    kind_watchdog = ScrapeWatchdog()  # KIND 수집이 조용히 고장난 상태를 감시
     
     async with aiohttp.ClientSession() as session:
         # 프로그램 시작 시 1회 즉시 감지
@@ -189,7 +191,23 @@ async def run_monitor():
                 
                 results = await asyncio.gather(kind_task, dart_task)
                 all_disclosures = results[0] + results[1]
-                
+
+                # 1-1. 수집기 상태 감시
+                # KIND는 HTML 파싱이라 페이지 구조가 바뀌면 예외 없이 빈 목록만 돌려준다.
+                # 그 상태로 두면 봇은 살아 있는데 아무것도 탐지하지 못하므로, 이상이
+                # 일정 시간 지속되면 알림방으로 알린다.
+                kind_stats = scraper.last_kind_stats
+                watch_signal = kind_watchdog.record(kind_stats['rows'], kind_stats['http_ok'])
+                if watch_signal:
+                    action, detail = watch_signal
+                    if action == 'warn':
+                        minutes = kind_watchdog.elapsed_minutes()
+                        print(f"⚠️ 수집 이상 감지({detail}): {minutes}분째 지속 — 경고 알림을 보냅니다.")
+                        await notifier.send_message(build_warning_message(detail, minutes), session)
+                    elif action == 'recover':
+                        print(f"✅ 수집이 정상으로 돌아왔습니다 ({detail}건 수신).")
+                        await notifier.send_message(build_recovery_message(detail), session)
+
                 # 2. 필터링 및 우선순위 정렬
                 filtered = logic.filter_disclosures(all_disclosures)
                 

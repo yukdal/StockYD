@@ -106,16 +106,21 @@ fi
 # stock_monitor.py는 127.0.0.1:51234 포트로 중복 실행을 막습니다.
 # 예전 방식(nohup)으로 떠 있는 봇이 남아 있으면 서비스가 기동하자마자 종료되므로 먼저 정리합니다.
 
-if pgrep -f "stock_monitor.py" >/dev/null 2>&1; then
-    echo "🔫 기존에 실행 중인 봇 프로세스를 종료합니다..."
-    pkill -f "stock_monitor.py" 2>/dev/null
+# ⚠️ 같은 서버에 다른 봇이 함께 돌고 있을 수 있으므로
+# 반드시 이 프로젝트 경로($SCRIPT_DIR)가 포함된 프로세스만 종료한다.
+# (pgrep/pkill은 확장 정규식(ERE)을 사용한다)
+KILL_PATTERN="$SCRIPT_DIR/.*(stock_monitor\.py|main\.py)"
+
+if pgrep -f "$KILL_PATTERN" >/dev/null 2>&1; then
+    echo "🔫 기존에 실행 중인 봇 프로세스를 종료합니다... (대상: $SCRIPT_DIR)"
+    pkill -f "$KILL_PATTERN" 2>/dev/null
     for _ in $(seq 1 10); do
-        pgrep -f "stock_monitor.py" >/dev/null 2>&1 || break
+        pgrep -f "$KILL_PATTERN" >/dev/null 2>&1 || break
         sleep 1
     done
-    if pgrep -f "stock_monitor.py" >/dev/null 2>&1; then
+    if pgrep -f "$KILL_PATTERN" >/dev/null 2>&1; then
         echo "   정상 종료되지 않아 강제 종료합니다."
-        pkill -9 -f "stock_monitor.py" 2>/dev/null
+        pkill -9 -f "$KILL_PATTERN" 2>/dev/null
         sleep 1
     fi
 fi

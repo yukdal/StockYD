@@ -2,7 +2,7 @@
 #
 # OCI 서버 자동 배포 및 재실행 스크립트
 #
-# systemd 서비스(stockyd)가 설치되어 있으면 systemctl로 재시작하고,
+# systemd 서비스(stock-monitor)가 설치되어 있으면 systemctl로 재시작하고,
 # 없으면 기존 방식대로 nohup 백그라운드로 실행합니다.
 # 어느 쪽이든 재실행 후 봇이 실제로 살아있는지 검증한 뒤 종료합니다.
 #
@@ -10,7 +10,7 @@
 
 set -u
 
-SERVICE_NAME="stockyd"
+SERVICE_NAME="stock-monitor"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 

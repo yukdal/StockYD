@@ -3,10 +3,15 @@
 # StockYD systemd 서비스 설치 스크립트
 #
 # 하는 일:
-#   1. 현재 사용자/디렉토리를 자동 감지하여 stockyd.service 템플릿을 채웁니다
-#   2. venv가 없으면 생성하고 의존성을 설치합니다
-#   3. nohup으로 떠 있던 기존 봇을 정리합니다 (포트 잠금 충돌 방지)
-#   4. /etc/systemd/system/stockyd.service 에 설치하고 enable + start
+#   1. 이 디렉토리를 이미 관리 중인 다른 서비스가 없는지 확인합니다
+#   2. 현재 사용자/디렉토리를 자동 감지하여 서비스 템플릿을 채웁니다
+#   3. venv가 없으면 생성하고 의존성을 설치합니다
+#   4. 떠 있던 기존 봇을 정리합니다 (포트 잠금 충돌 방지)
+#   5. /etc/systemd/system/stock-monitor.service 에 설치하고 enable + start
+#
+# 이미 stock-monitor.service가 있다면 새로 만들지 않고 그 내용을 갱신합니다.
+# (서비스를 새 이름으로 추가하면 supervisor가 둘이 되어 각자 봇을 띄우고
+#  서로 죽이는 무한 루프가 발생합니다.)
 #
 # 사용법 (서버에서):
 #   bash install_service.sh
@@ -15,7 +20,7 @@
 
 set -u
 
-SERVICE_NAME="stockyd"
+SERVICE_NAME="stock-monitor"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="$SCRIPT_DIR/$SERVICE_NAME.service"
 TARGET="/etc/systemd/system/$SERVICE_NAME.service"
@@ -71,6 +76,38 @@ fi
 
 echo "👤 실행 계정 : $RUN_USER"
 echo "📂 작업 경로 : $SCRIPT_DIR"
+
+# --- 중복 서비스 검사 ---------------------------------------------------------
+# 이 디렉토리를 이미 관리하고 있는 '다른 이름'의 서비스가 있으면 설치를 중단한다.
+# supervisor가 둘이 되면 각자 봇을 띄우고, 예전 코드에서는 서로를 죽이는
+# 무한 루프(재시작마다 텔레그램 시작 알림 발송)까지 발생했다.
+
+CONFLICTS="$(grep -ls -- "$SCRIPT_DIR" /etc/systemd/system/*.service 2>/dev/null \
+             | grep -v "/${SERVICE_NAME}\.service$" || true)"
+
+if [ -n "$CONFLICTS" ]; then
+    echo "----------------------------------------------------"
+    echo "❌ 이 디렉토리를 이미 관리 중인 다른 서비스가 있습니다:"
+    for unit in $CONFLICTS; do
+        echo "   - $(basename "$unit")"
+    done
+    echo ""
+    echo "이대로 설치하면 봇을 띄우는 서비스가 둘이 되어 서로 충돌합니다."
+    echo "👉 아래 중 하나를 선택하신 뒤 다시 실행해주세요."
+    echo "   (A) 기존 서비스를 쓴다  : 이 스크립트를 실행할 필요가 없습니다"
+    echo "   (B) 이 서비스로 통일한다 : 기존 서비스를 먼저 제거하세요"
+    for unit in $CONFLICTS; do
+        name="$(basename "$unit" .service)"
+        echo "       sudo systemctl disable --now $name && sudo rm $unit"
+    done
+    echo "       sudo systemctl daemon-reload"
+    echo "----------------------------------------------------"
+    exit 1
+fi
+
+if [ -f "$TARGET" ]; then
+    echo "ℹ️ 기존 $SERVICE_NAME.service 를 발견했습니다. 새로 만들지 않고 내용을 갱신합니다."
+fi
 
 if [ ! -f "$SCRIPT_DIR/.env" ]; then
     echo "⚠️ .env 파일이 없습니다. 봇이 텔레그램 토큰을 읽지 못해 알림을 보내지 못합니다."
@@ -140,6 +177,13 @@ if grep -q "__USER__\|__WORKDIR__" "$TMP_UNIT"; then
     echo "❌ 서비스 파일 치환에 실패했습니다."
     rm -f "$TMP_UNIT"
     exit 1
+fi
+
+# 기존 유닛이 있으면 덮어쓰기 전에 백업 (되돌릴 수 있도록)
+if [ -f "$TARGET" ]; then
+    BACKUP="$TARGET.bak.$(date +%Y%m%d%H%M%S)"
+    $SUDO cp -p "$TARGET" "$BACKUP"
+    echo "   기존 유닛 파일을 백업했습니다: $BACKUP"
 fi
 
 $SUDO install -m 644 "$TMP_UNIT" "$TARGET"

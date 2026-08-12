@@ -1,6 +1,8 @@
 import aiohttp
 import asyncio
 import os
+import stat
+import tempfile
 
 class TelegramNotifier:
     # 전송 실패 시 재시도 정책
@@ -174,15 +176,54 @@ class TelegramNotifier:
                 chats.extend(self._find_chats(item))
         return chats
 
+    @staticmethod
+    def _atomic_write(path, content):
+        """파일을 원자적으로 교체 저장한다.
+
+        같은 디렉토리에 임시 파일을 만들어 완전히 기록한 뒤 os.replace()로 갈아끼운다.
+        os.replace()는 POSIX에서 원자적이므로, 도중에 프로세스가 죽더라도 대상 파일은
+        '이전 내용 그대로' 아니면 '새 내용 완전본' 둘 중 하나만 남는다.
+
+        .env에 직접 쓰는 방식은 쓰는 도중 종료되면 파일이 잘려나가
+        TELEGRAM_BOT_TOKEN 같은 값이 통째로 사라질 수 있다. 봇이 자동 재시작되는
+        환경에서는 실제로 일어날 수 있는 사고다.
+        """
+        directory = os.path.dirname(os.path.abspath(path)) or '.'
+        # 임시 파일은 반드시 대상과 같은 파일시스템(=같은 디렉토리)에 만들어야
+        # os.replace()가 원자적으로 동작한다.
+        fd, tmp_path = tempfile.mkstemp(prefix='.env.tmp.', dir=directory)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())  # 디스크에 실제로 내려쓴 뒤 교체
+
+            # 기존 파일의 권한을 유지 (없으면 소유자만 읽기/쓰기)
+            try:
+                os.chmod(tmp_path, stat.S_IMODE(os.stat(path).st_mode))
+            except OSError:
+                os.chmod(tmp_path, 0o600)
+
+            os.replace(tmp_path, path)
+            tmp_path = None  # 교체 성공 — 정리할 임시 파일이 없다
+        finally:
+            # 실패하거나 중간에 중단되어도 원본은 손대지 않았으므로 안전하다.
+            # 남은 임시 파일만 지운다 (토큰이 담긴 파일이 방치되지 않도록).
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
     def _update_env_file(self):
         """현재 self.chat_ids 리스트를 .env 파일에 자동 업데이트 및 영구 저장"""
         env_path = '.env'
         joined_ids = ", ".join(self.chat_ids)
-        
+
         try:
             if not os.path.exists(env_path):
-                with open(env_path, 'w', encoding='utf-8') as f:
-                    f.write(f"TELEGRAM_CHAT_ID={joined_ids}\n")
+                self._atomic_write(env_path, f"TELEGRAM_CHAT_ID={joined_ids}\n")
+                print(f"💾 .env 파일을 생성하고 TELEGRAM_CHAT_ID를 기록했습니다: {joined_ids}")
                 return
 
             with open(env_path, 'r', encoding='utf-8') as f:
@@ -204,12 +245,12 @@ class TelegramNotifier:
                     new_lines[-1] += '\n'
                 new_lines.append(f"TELEGRAM_CHAT_ID={joined_ids}\n")
 
-            with open(env_path, 'w', encoding='utf-8') as f:
-                f.writelines(new_lines)
-                
+            self._atomic_write(env_path, "".join(new_lines))
+
             print(f"💾 .env 파일의 TELEGRAM_CHAT_ID가 업데이트되었습니다: {joined_ids}")
         except Exception as e:
             print(f"⚠️ .env 파일 업데이트 중 오류 발생: {e}")
+            print("   (원본 .env는 변경되지 않았습니다.)")
 
     async def send_message(self, text, session):
         """텔레그램 메시지 전송 (실패 시 재시도 포함)

@@ -120,6 +120,14 @@ KIND는 HTML을 파싱해서 공시를 읽어오므로, KRX가 페이지 구조�
 
 임계 시간은 `scrape_watchdog.py`의 `DEFAULT_THRESHOLD`, 재알림 간격은 `DEFAULT_REWARN_INTERVAL`에서 조정할 수 있습니다.
 
+### 요청 타임아웃
+KIND·DART 요청에는 15초 타임아웃이 적용됩니다(`scraper.py`의 `REQUEST_TIMEOUT`). 지정하지 않으면 aiohttp 기본값인 5분이 적용되어, 응답이 늦어질 때 3초 주기의 감시 루프가 사실상 정지합니다. 타임아웃된 요청은 '수집 실패'로 기록되므로 위의 이상 감지에도 반영됩니다.
+
+### `.env` 자동 갱신의 안전성
+새 채팅방을 감지하면 `TELEGRAM_CHAT_ID`를 `.env`에 자동으로 기록합니다. 이때 대상 파일에 직접 쓰지 않고, 같은 디렉토리에 임시 파일을 완성한 뒤 `os.replace()`로 교체합니다.
+
+`os.replace()`는 원자적이므로 도중에 프로세스가 종료되어도 `.env`는 **이전 내용 그대로**이거나 **새 내용 완전본**이며, 중간에 잘린 상태로 남지 않습니다. 파일에 직접 쓰는 방식에서는 봇이 재시작되는 순간 `.env`가 잘려 `TELEGRAM_BOT_TOKEN`이 통째로 사라질 수 있었습니다.
+
 ## 📂 파일 구조
 - `stock_monitor.py`: 프로그램 실행 진입점 및 메인 루프 (기존 main.py에서 프로세스 충돌 방지를 위해 변경).
 - `scraper.py`: KIND 및 DART 데이터 수집 모듈.

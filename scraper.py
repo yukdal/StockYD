@@ -9,6 +9,12 @@ class DisclosureScraper:
     KIND_URL = "https://kind.krx.co.kr/disclosure/todaydisclosure.do"
     DART_URL = "https://opendart.fss.or.kr/api/list.json"
 
+    # 요청 타임아웃(초).
+    # 지정하지 않으면 aiohttp 기본값(총 5분)이 적용되어, 응답이 늦어질 때
+    # 감시 루프 전체가 그만큼 멈춰버린다. 3초마다 도는 봇에게는 사실상 정지다.
+    # KIND는 시장별로 3회 요청하므로 최악의 경우 15초 × 3 = 45초까지 걸릴 수 있다.
+    REQUEST_TIMEOUT = 15
+
     def __init__(self, dart_api_key=None):
         self.dart_api_key = dart_api_key or os.getenv('DART_API_KEY')
         # 직전 KIND 수집 결과 요약 {'rows': 파싱 건수, 'http_ok': 응답 수신 여부}
@@ -40,7 +46,8 @@ class DisclosureScraper:
             }
             
             try:
-                async with session.post(self.KIND_URL, data=payload, headers=self.headers) as response:
+                async with session.post(self.KIND_URL, data=payload, headers=self.headers,
+                                        timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)) as response:
                     if response.status == 200:
                         http_ok = True
                         html = await response.text()
@@ -48,6 +55,8 @@ class DisclosureScraper:
                         all_kind_disclosures.extend(disclosures)
                     else:
                         print(f"KIND Error (Market {m_type}): {response.status}")
+            except asyncio.TimeoutError:
+                print(f"KIND 응답 시간 초과 (Market {m_type}): {self.REQUEST_TIMEOUT}초")
             except Exception as e:
                 print(f"KIND Fetch Exception (Market {m_type}): {e}")
 
@@ -118,7 +127,8 @@ class DisclosureScraper:
         }
         
         try:
-            async with session.get(self.DART_URL, params=params) as response:
+            async with session.get(self.DART_URL, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get('status') == '000':
@@ -126,6 +136,9 @@ class DisclosureScraper:
                     return []
                 else:
                     return []
+        except asyncio.TimeoutError:
+            print(f"DART 응답 시간 초과: {self.REQUEST_TIMEOUT}초")
+            return []
         except Exception as e:
             print(f"DART Fetch Exception: {e}")
             return []

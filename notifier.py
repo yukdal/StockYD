@@ -1,7 +1,21 @@
 import aiohttp
+import asyncio
 import os
 
 class TelegramNotifier:
+    # 전송 실패 시 재시도 정책
+    # 공시 알림은 놓치면 끝이므로 일시적 장애(네트워크 순단, 429, 5xx)는 반드시 재시도한다.
+    MAX_SEND_ATTEMPTS = 3          # 채팅방당 최대 시도 횟수
+    RETRY_BACKOFF = (1, 3)         # 재시도 전 대기 시간(초). 1차 실패 후 1초, 2차 실패 후 3초
+    MAX_RETRY_AFTER = 60           # 텔레그램이 요구한 대기 시간이 이보다 길면 즉시 포기하고 상위 루프에 맡김
+
+    # 재시도해도 결과가 달라지지 않는 상태 코드
+    #   400: 잘못된 요청(채팅방 없음, 메시지 형식 오류 등)
+    #   403: 봇이 차단되었거나 채팅방에서 추방됨
+    #   404: 존재하지 않는 채팅방
+    # 이 경우 계속 재시도하면 정상 채팅방에 중복 발송만 유발하므로 '영구 실패'로 처리한다.
+    PERMANENT_ERROR_STATUSES = frozenset({400, 403, 404})
+
     def __init__(self, token=None, chat_id=None):
         self.token = token or os.getenv('TELEGRAM_BOT_TOKEN')
         raw_chat_id = chat_id or os.getenv('TELEGRAM_CHAT_ID')
@@ -65,10 +79,14 @@ class TelegramNotifier:
         except Exception as e:
             print(f"⚠️ Telegram 자동 감지 오류: {e}")
 
-    async def _send_to_single_chat(self, chat_id, text, session):
-        """단일 채팅방으로 메시지 전송 헬퍼"""
-        if not self.token:
-            return False
+    async def _send_once(self, chat_id, text, session):
+        """단일 채팅방으로 1회 전송 시도.
+
+        반환: (결과, 대기시간)
+          결과 'ok'        — 전송 성공
+          결과 'retry'     — 일시적 실패. 대기시간만큼 쉬었다가 재시도할 가치가 있음
+          결과 'permanent' — 재시도해도 소용없는 실패 (채팅방 없음, 봇 차단 등)
+        """
         payload = {
             'chat_id': chat_id,
             'text': text,
@@ -76,15 +94,72 @@ class TelegramNotifier:
             'disable_web_page_preview': False
         }
         try:
-            async with session.post(self.api_url, json=payload) as response:
-                if response.status != 200:
-                    err_text = await response.text()
-                    print(f"Telegram Welcome Error (chat_id: {chat_id}): {response.status} - {err_text}")
-                    return False
-                return True
-        except Exception as e:
-            print(f"Telegram Welcome Exception (chat_id: {chat_id}): {e}")
+            async with session.post(self.api_url, json=payload,
+                                    timeout=aiohttp.ClientTimeout(total=20)) as response:
+                if response.status == 200:
+                    return 'ok', 0
+
+                err_text = await response.text()
+
+                # 429 Too Many Requests: 텔레그램이 알려준 대기 시간을 그대로 지킨다.
+                if response.status == 429:
+                    retry_after = self.RETRY_BACKOFF[0]
+                    try:
+                        body = await response.json()
+                        retry_after = int(body.get('parameters', {}).get('retry_after', retry_after))
+                    except Exception:
+                        pass  # 본문 파싱 실패 시 기본 대기 시간 사용
+
+                    if retry_after > self.MAX_RETRY_AFTER:
+                        # 너무 길게 기다리면 감시 루프가 멈추므로 상위 루프의 다음 주기에 맡긴다.
+                        print(f"⚠️ 텔레그램 요청 제한 (chat_id: {chat_id}): {retry_after}초 대기 요구 — 다음 주기에 재시도")
+                        return 'retry', 0
+                    print(f"⚠️ 텔레그램 요청 제한 (chat_id: {chat_id}): {retry_after}초 후 재시도")
+                    return 'retry', retry_after
+
+                if response.status in self.PERMANENT_ERROR_STATUSES:
+                    print(f"❌ 전송 불가 (chat_id: {chat_id}): {response.status} - {err_text}")
+                    print("   재시도해도 해결되지 않는 오류입니다. 채팅방 상태나 봇 권한을 확인하세요.")
+                    return 'permanent', 0
+
+                # 그 외(5xx 등)는 서버 측 일시 장애로 보고 재시도
+                print(f"⚠️ 전송 실패 (chat_id: {chat_id}): {response.status} - {err_text}")
+                return 'retry', self.RETRY_BACKOFF[0]
+
+        except asyncio.TimeoutError:
+            print(f"⚠️ 전송 시간 초과 (chat_id: {chat_id})")
+            return 'retry', self.RETRY_BACKOFF[0]
+        except aiohttp.ClientError as e:
+            print(f"⚠️ 전송 중 통신 오류 (chat_id: {chat_id}): {e}")
+            return 'retry', self.RETRY_BACKOFF[0]
+
+    async def _send_with_retry(self, chat_id, text, session):
+        """단일 채팅방으로 재시도를 포함해 전송.
+
+        반환: 'ok' | 'permanent' | 'failed'
+          'failed'는 재시도할 가치가 있었으나 횟수를 모두 소진한 경우로,
+          호출한 쪽이 이 공시를 '전송 완료'로 기록하지 않아야 한다.
+        """
+        for attempt in range(1, self.MAX_SEND_ATTEMPTS + 1):
+            result, wait = await self._send_once(chat_id, text, session)
+
+            if result in ('ok', 'permanent'):
+                return result
+
+            if attempt < self.MAX_SEND_ATTEMPTS:
+                # 텔레그램이 지정한 대기 시간이 있으면 그것을, 없으면 단계별 백오프를 사용
+                delay = wait or self.RETRY_BACKOFF[min(attempt - 1, len(self.RETRY_BACKOFF) - 1)]
+                print(f"   재시도 {attempt + 1}/{self.MAX_SEND_ATTEMPTS} ({delay}초 후)...")
+                await asyncio.sleep(delay)
+
+        print(f"❌ {self.MAX_SEND_ATTEMPTS}회 시도 후에도 전송하지 못했습니다 (chat_id: {chat_id})")
+        return 'failed'
+
+    async def _send_to_single_chat(self, chat_id, text, session):
+        """단일 채팅방으로 메시지 전송 헬퍼 (환영 메시지 등)"""
+        if not self.token:
             return False
+        return await self._send_with_retry(chat_id, text, session) == 'ok'
 
     def _find_chats(self, data):
         """업데이트 데이터 내 모든 'chat' 객체를 재귀적으로 탐색하여 리스트로 반환"""
@@ -137,7 +212,16 @@ class TelegramNotifier:
             print(f"⚠️ .env 파일 업데이트 중 오류 발생: {e}")
 
     async def send_message(self, text, session):
-        """텔레그램 메시지 전송"""
+        """텔레그램 메시지 전송 (실패 시 재시도 포함)
+
+        반환값 True는 '이 메시지를 전송 완료로 기록해도 된다'는 뜻이다.
+        재시도로도 해결되지 않은 일시적 실패가 하나라도 있으면 False를 반환하여,
+        호출한 쪽이 해당 공시를 다음 주기에 다시 시도할 수 있게 한다.
+
+        채팅방 하나가 '영구 실패'(봇 차단 등)인 경우는 True로 본다.
+        재시도해도 달라지지 않으며, 계속 재시도하면 정상 채팅방에 중복 발송만
+        반복되기 때문이다.
+        """
         if not self.token or not self.chat_ids:
             missing = []
             if not self.token: missing.append("TELEGRAM_BOT_TOKEN")
@@ -145,26 +229,12 @@ class TelegramNotifier:
             print(f"⚠️ 텔레그램 설정 누락: {', '.join(missing)}")
             print(f"DEBUG (전송 시도한 메시지): \n{text}")
             return False
-            
-        success_all = True
+
+        retryable_failure = False
         # 전송 직전에 한 번 더 중복을 철저히 제거
         unique_chat_ids = list(dict.fromkeys(self.chat_ids))
         for chat_id in unique_chat_ids:
-            payload = {
-                'chat_id': chat_id,
-                'text': text,
-                'parse_mode': 'HTML',
-                'disable_web_page_preview': False
-            }
-            
-            try:
-                async with session.post(self.api_url, json=payload) as response:
-                    if response.status != 200:
-                        err_text = await response.text()
-                        print(f"Telegram Error (chat_id: {chat_id}): {response.status} - {err_text}")
-                        success_all = False
-            except Exception as e:
-                print(f"Telegram Exception (chat_id: {chat_id}): {e}")
-                success_all = False
-                
-        return success_all
+            if await self._send_with_retry(chat_id, text, session) == 'failed':
+                retryable_failure = True
+
+        return not retryable_failure

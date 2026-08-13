@@ -148,6 +148,11 @@ async def run_monitor():
     krx = KRXOpenAPI()  # KRX 공식 API 객체 생성 (.env의 KRX_AUTH_KEY 자동 로드, 없으면 비활성)
     kind_watchdog = ScrapeWatchdog()  # KIND 수집이 조용히 고장난 상태를 감시
     fetch_failures = 0                # KIND 수집 연속 실패 횟수 (백오프 계산용)
+
+    # 기동 직후 워밍업 주기 수. 이 동안에는 이미 지나간 공시를 발송하지 않고 기록만 한다.
+    # 시장을 순환 조회하므로 '시장 수'만큼(= 한 바퀴) 유지해야 모든 시장의 기존 공시가
+    # 뒤늦게 발송되는 것을 막을 수 있다.
+    warmup_cycles = len(DisclosureScraper.MARKET_TYPES)
     
     async with aiohttp.ClientSession() as session:
         # 프로그램 시작 시 1회 즉시 감지
@@ -237,14 +242,25 @@ async def run_monitor():
                 # 3. 알림 전송
                 send_failed = False  # 이번 주기에 재시도가 필요한 실패가 있었는지
 
-                if logic.is_first_ever_run:
+                if warmup_cycles > 0:
+                    # 기동 직후 '워밍업' 구간.
+                    # 이미 지나간 공시를 뒤늦게 무더기로 보내지 않도록, 보내지 않고 기록만 한다.
+                    #
+                    # ⚠️ 시장을 순환 조회하므로 한 주기만 생략해서는 부족하다.
+                    # 첫 주기는 유가증권만 보므로, 코스닥·파생상품의 오늘 공시는
+                    # 2~3주기에 '새 공시'로 잡혀 뒤늦게 발송된다.
+                    # 그래서 시장 수만큼(한 바퀴) 워밍업을 유지한다.
+                    warmup_cycles -= 1
+                    market_label = ",".join(kind_stats.get('markets') or ())
                     if filtered:
-                        print(f"⚠️ 최초 실행: {len(filtered)}개의 기존 공시 알림을 생략합니다 (텔레그램 스팸 제한 방지).")
+                        print(f"⚠️ 기동 중(시장 {market_label}): 기존 공시 {len(filtered)}건의 알림을 생략합니다. "
+                              f"(남은 워밍업 {warmup_cycles}주기)")
                         # 보내지는 않지만 '이미 처리한 공시'로 기록해 다음 주기에 다시 뜨지 않게 한다
                         for disc in filtered:
                             logic.mark_sent(disc)
                     else:
-                        print("⚠️ 최초 실행: 기존 공시 중 새로운 항목이 없습니다.")
+                        print(f"⚠️ 기동 중(시장 {market_label}): 기존 공시 중 새로운 항목이 없습니다. "
+                              f"(남은 워밍업 {warmup_cycles}주기)")
                     logic.is_first_ever_run = False
                 else:
                     for disc in filtered:

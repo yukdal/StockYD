@@ -99,6 +99,18 @@ STARTUP_NOTICE_INTERVAL = 600  # 초 단위 (10분)
 # 실패 직후 3초 만에 다시 시도하면 같은 이유로 실패하며 텔레그램 API만 두드리게 된다.
 SEND_RETRY_COOLDOWN = 30
 
+# 감시 주기(초).
+#
+# ⚠️ 예전에는 3초였고, 매 주기 세 시장을 모두 조회해 분당 약 40회를 장중 내내
+# 보냈다. 결국 KRX가 서버 IP를 차단(HTTP 403)해 공시를 전혀 받지 못하는 사고가
+# 났다. 지금은 30초 주기 + 시장 1개씩 순환이라 분당 약 2회로, 요청량이 20분의 1이다.
+# (DART Open API의 일 10,000건 제한도 예전 주기로는 초과하고 있었다.)
+POLL_INTERVAL = 30
+
+# KIND 수집이 실패했을 때 점점 길게 쉬는 간격(초).
+# 차단당한 상태에서 같은 주기로 계속 두드리면 차단이 연장되기만 한다.
+FETCH_BACKOFF_STEPS = (60, 180, 600, 1800)
+
 
 def _should_send_startup_notice():
     """직전 시작 알림으로부터 STARTUP_NOTICE_INTERVAL이 지났으면 True."""
@@ -135,6 +147,7 @@ async def run_monitor():
     notifier = TelegramNotifier()
     krx = KRXOpenAPI()  # KRX 공식 API 객체 생성 (.env의 KRX_AUTH_KEY 자동 로드, 없으면 비활성)
     kind_watchdog = ScrapeWatchdog()  # KIND 수집이 조용히 고장난 상태를 감시
+    fetch_failures = 0                # KIND 수집 연속 실패 횟수 (백오프 계산용)
     
     async with aiohttp.ClientSession() as session:
         # 프로그램 시작 시 1회 즉시 감지
@@ -197,16 +210,26 @@ async def run_monitor():
                 # 그 상태로 두면 봇은 살아 있는데 아무것도 탐지하지 못하므로, 이상이
                 # 일정 시간 지속되면 알림방으로 알린다.
                 kind_stats = scraper.last_kind_stats
-                watch_signal = kind_watchdog.record(kind_stats['rows'], kind_stats['http_ok'])
+                # 시장을 순환 조회하므로 이번 주기의 건수만 보면 안 된다.
+                # (해당 시장에 공시가 없는 시간대에 '0건'으로 오탐이 난다)
+                # 시장별 최근값을 합친 rows_recent를 기준으로 판단한다.
+                watch_signal = kind_watchdog.record(kind_stats['rows_recent'], kind_stats['http_ok'])
                 if watch_signal:
                     action, detail = watch_signal
                     if action == 'warn':
                         minutes = kind_watchdog.elapsed_minutes()
                         print(f"⚠️ 수집 이상 감지({detail}): {minutes}분째 지속 — 경고 알림을 보냅니다.")
-                        await notifier.send_message(build_warning_message(detail, minutes), session)
+                        await notifier.send_message(
+                            build_warning_message(detail, minutes, kind_stats.get('last_status')), session)
                     elif action == 'recover':
                         print(f"✅ 수집이 정상으로 돌아왔습니다 ({detail}건 수신).")
                         await notifier.send_message(build_recovery_message(detail), session)
+
+                # 수집 실패가 이어지면 점점 길게 쉰다 (차단 상태에서 계속 두드리지 않도록)
+                if kind_stats['http_ok']:
+                    fetch_failures = 0
+                else:
+                    fetch_failures += 1
 
                 # 2. 필터링 및 우선순위 정렬
                 filtered = logic.filter_disclosures(all_disclosures)
@@ -250,14 +273,20 @@ async def run_monitor():
                         # 봇 차단 방지를 위한 미세 지연
                         await asyncio.sleep(0.5)
 
-                # 4. 폴링 주기 지연
-                # 전송에 실패했다면 곧바로 다시 시도해봐야 같은 이유로 실패할 가능성이 크고,
-                # 텔레그램 API만 계속 두드리게 되므로 잠시 길게 쉬었다가 재시도한다.
-                if send_failed:
-                    print(f"⏳ 전송 실패가 있어 {SEND_RETRY_COOLDOWN}초 후 재시도합니다.")
-                    await asyncio.sleep(SEND_RETRY_COOLDOWN)
+                # 4. 다음 주기까지 대기
+                if fetch_failures:
+                    # KIND 수집 실패가 이어지는 중 — 차단(403)일 수 있으므로 점점 길게 쉰다.
+                    delay = FETCH_BACKOFF_STEPS[min(fetch_failures - 1, len(FETCH_BACKOFF_STEPS) - 1)]
+                    print(f"⏳ KIND 수집 실패 {fetch_failures}회 연속 — {delay}초 후 재시도합니다.")
+                elif send_failed:
+                    # 전송에 실패했다면 곧바로 다시 시도해봐야 같은 이유로 실패할 가능성이 크고,
+                    # 텔레그램 API만 계속 두드리게 되므로 잠시 길게 쉬었다가 재시도한다.
+                    delay = SEND_RETRY_COOLDOWN
+                    print(f"⏳ 전송 실패가 있어 {delay}초 후 재시도합니다.")
                 else:
-                    await asyncio.sleep(3)
+                    delay = POLL_INTERVAL
+
+                await asyncio.sleep(delay)
                 
             except Exception as e:
                 print(f"❌ 루프 오류 발생: {e}")

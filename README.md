@@ -124,6 +124,20 @@ curl -s -o /dev/null -w "%{http_code}\n" https://kind.krx.co.kr/
 
 `403`이면 아직 차단 중이고, `200`이면 풀린 것입니다. 차단 중에는 봇을 멈춰두는 편이 회복에 유리합니다.
 
+**차단 해제를 자동으로 감시하려면** `check_kind_access.sh`를 cron에 등록하십시오.
+
+```bash
+crontab -e
+```
+
+```cron
+*/30 * * * * /home/ubuntu/stock-monitor/check_kind_access.sh >> /home/ubuntu/stock-monitor/kind_access.log 2>&1
+```
+
+30분마다 접근 여부를 확인하고, **상태가 바뀌는 순간에만** 텔레그램으로 알립니다(차단 해제 / 신규 차단). 같은 상태가 이어지면 조용하므로 알림방이 시끄러워지지 않습니다. 요청은 메인 페이지 GET 1회뿐이라 하루 48회로 부담이 없습니다.
+
+봇을 자동으로 재시작하지는 않습니다. 차단이 풀린 직후 바로 켜기보다 상황을 보고 판단하는 편이 안전하기 때문입니다.
+
 ### 수집 이상 감지
 KIND는 HTML을 파싱해서 공시를 읽어오므로, KRX가 페이지 구조를 바꾸면 **예외 없이 빈 목록만 계속 반환**합니다. 이 경우 프로세스는 멀쩡히 살아 있고 `systemctl status`도 정상이지만 실제로는 아무 공시도 탐지하지 못합니다.
 
@@ -166,6 +180,7 @@ KIND·DART 요청에는 15초 타임아웃이 적용됩니다(`scraper.py`의 `R
 - `test_telegram.py`: 텔레그램 토큰 유효성 및 채팅방 ID 확인 스크립트 (토큰은 `.env`에서 읽음).
 - `deploy.sh`: 서버 배포 스크립트 (git pull → 의존성 설치 → 재시작 → 기동 검증).
 - `install_service.sh`: systemd 서비스 등록 스크립트 (재부팅 시 자동 시작 설정).
+- `check_kind_access.sh`: KIND 접근 가능 여부를 주기적으로 확인하고 상태 변화 시 알리는 스크립트 (cron용).
 - `stock-monitor.service`: systemd 유닛 파일 템플릿 (`install_service.sh`가 경로/계정을 채워 설치).
 - `requirements.txt`: 의존성 패키지 목록.
 

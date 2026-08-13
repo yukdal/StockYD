@@ -20,28 +20,70 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
 STATE_FILE="$SCRIPT_DIR/.kind_access_state"
-CHECK_URL="${KIND_CHECK_URL:-https://kind.krx.co.kr/}"
+
+# 봇이 실제로 사용하는 요청과 똑같이 보내 확인한다.
+# 메인 페이지가 열리는 것과 공시 조회가 되는 것은 별개일 수 있으므로,
+# '봇이 지금 동작할 수 있는가'를 직접 확인하는 편이 정확하다.
+CHECK_URL="${KIND_CHECK_URL:-https://kind.krx.co.kr/disclosure/todaydisclosure.do}"
+CHECK_DATA="method=searchTodayDisclosureSub&currentPageSize=100&pageIndex=1&orderMode=1&orderStat=D&forward=todaydisclosure_sub&marketType=1"
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # --- 접근 확인 ---------------------------------------------------------------
-# 페이지 본문은 버리고 상태 코드만 본다 (불필요한 트래픽을 만들지 않기 위함)
-CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -A "$UA" "$CHECK_URL" 2>/dev/null)"
+# 응답 본문은 버리고 상태 코드만 본다 (불필요한 트래픽을 만들지 않기 위함)
+CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+    -A "$UA" -H "Referer: $CHECK_URL" --data "$CHECK_DATA" "$CHECK_URL" 2>/dev/null)"
 
 # curl 자체가 실패하면 000이 반환된다 (DNS 실패, 연결 불가 등)
 [ -z "$CODE" ] && CODE="000"
 
-PREV="$(cat "$STATE_FILE" 2>/dev/null || echo "")"
+# --- 연속 확인 ---------------------------------------------------------------
+# ⚠️ 한 번의 200으로 '해제'를 판단하면 안 된다.
+#
+# 실제로 차단이 유지되는 중에도 간헐적으로 200이 섞여 나오는 것을 확인했다.
+# 그 한 번을 보고 해제 알림을 보냈다가, 봇을 재시작하자마자 다시 403을 맞았다.
+# 그래서 CONFIRM_RUNS번 연속으로 성공해야 해제로 인정한다.
+CONFIRM_RUNS=2
 
-echo "[$TIMESTAMP] KIND 접근 확인: HTTP $CODE (이전: ${PREV:-없음})"
+# 상태 파일 형식: "<상태코드> <연속 성공 횟수>"
+PREV_RAW="$(cat "$STATE_FILE" 2>/dev/null || echo "")"
+PREV_CODE="$(echo "$PREV_RAW" | awk '{print $1}')"
+PREV_OK="$(echo "$PREV_RAW" | awk '{print $2}')"
+[ -z "$PREV_OK" ] && PREV_OK=0
 
-# 상태가 그대로면 조용히 종료
-if [ "$CODE" = "$PREV" ]; then
+if [ "$CODE" = "200" ]; then
+    if [ "$PREV_CODE" = "200" ]; then
+        OK_COUNT=$((PREV_OK + 1))
+    else
+        OK_COUNT=1
+    fi
+else
+    OK_COUNT=0
+fi
+
+echo "[$TIMESTAMP] KIND 접근 확인: HTTP $CODE (이전: ${PREV_CODE:-없음}, 연속 성공 ${OK_COUNT}/${CONFIRM_RUNS})"
+
+echo "$CODE $OK_COUNT" > "$STATE_FILE"
+
+# 아직 확인 횟수를 못 채웠으면 조용히 종료
+if [ "$CODE" = "200" ] && [ "$OK_COUNT" -lt "$CONFIRM_RUNS" ]; then
+    echo "  ⏳ 접근에 성공했지만 아직 확정하지 않습니다. 다음 확인에서 한 번 더 성공하면 알립니다."
     exit 0
 fi
 
-echo "$CODE" > "$STATE_FILE"
+# 이미 알린 상태가 이어지고 있으면 조용히 종료
+if [ "$CODE" = "200" ] && [ "$OK_COUNT" -gt "$CONFIRM_RUNS" ]; then
+    exit 0
+fi
+# 접근 불가일 때 '차단됨' 알림은 '해제로 확정했던 상태'에서 무너진 경우에만 보낸다.
+# 확정 전의 일시적인 200 뒤에 다시 403이 오는 것은 차단이 이어지는 중일 뿐이므로 알리지 않는다.
+if [ "$CODE" != "200" ] && { [ "$PREV_CODE" != "200" ] || [ "$PREV_OK" -lt "$CONFIRM_RUNS" ]; }; then
+    echo "  ℹ️ 접근 불가 상태가 이어지고 있습니다. (알림 없음)"
+    exit 0
+fi
+
+PREV="$PREV_CODE"
 
 # --- 텔레그램 알림 -----------------------------------------------------------
 
@@ -78,17 +120,20 @@ send_telegram() {
 }
 
 if [ "$CODE" = "200" ]; then
-    # 차단 해제 (또는 최초 실행인데 접근 가능)
-    echo "  ✅ KIND 접근이 가능해졌습니다."
+    # CONFIRM_RUNS번 연속 성공 — 이제 해제로 인정한다
+    echo "  ✅ KIND 접근이 가능해졌습니다. (${CONFIRM_RUNS}회 연속 확인)"
     send_telegram "✅ <b>[시스템 알림]</b>
-KIND 접근이 <b>정상으로 돌아왔습니다.</b> (HTTP 200)
+KIND 접근이 <b>정상으로 돌아왔습니다.</b> (HTTP 200, ${CONFIRM_RUNS}회 연속 확인)
+
+봇이 실제로 사용하는 공시 조회 요청으로 확인했습니다.
 
 봇을 다시 시작할 수 있습니다:
 <code>cd ~/stock-monitor && bash deploy.sh</code>
 
+재시작 후 <code>journalctl -u stock-monitor -n 20</code>로 403이 없는지 확인하십시오.
 다시 차단되지 않도록 요청 주기 설정은 그대로 두십시오."
 
-elif [ -n "$PREV" ] && [ "$PREV" = "200" ]; then
+elif [ "$PREV" = "200" ]; then
     # 정상이었다가 막힌 경우에만 알린다
     echo "  🚫 KIND 접근이 차단되었습니다."
     if [ "$CODE" = "403" ]; then

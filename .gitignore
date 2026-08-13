@@ -22,3 +22,5 @@ seen_ids.json
 *.pid
 nohup.out
 .last_startup_notice
+.kind_access_state
+kind_access.log

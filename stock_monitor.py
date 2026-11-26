@@ -203,7 +203,7 @@ async def run_monitor():
     use_kis = kis.is_configured
     source_label = "KIS Open API" if use_kis else "KIND"
     print(f"📡 공시 수집원: {source_label}"
-          + (f" (제목 필터: '{kis.title_filter}')" if use_kis and kis.title_filter else ""))
+          + (f" (제공업체코드: {','.join(kis.disclosure_codes)})" if use_kis else ""))
 
     # KIND 수집 연속 실패 횟수와 다음 요청 허용 시각 (재시작해도 이어받는다)
     fetch_failures, next_kind_allowed_at = _load_backoff_state()
@@ -217,7 +217,9 @@ async def run_monitor():
     # 기동 직후 워밍업 주기 수. 이 동안에는 이미 지나간 공시를 발송하지 않고 기록만 한다.
     # 시장을 순환 조회하므로 '시장 수'만큼(= 한 바퀴) 유지해야 모든 시장의 기존 공시가
     # 뒤늦게 발송되는 것을 막을 수 있다.
-    warmup_cycles = len(DisclosureScraper.MARKET_TYPES)
+    # KIS는 첫 주기에 모든 코드의 최신 페이지로 기준점(워터마크)을 잡으므로 1주기면 충분하다.
+    # (더 길게 잡으면 2주기째부터 들어온 진짜 새 공시까지 발송이 생략된다)
+    warmup_cycles = 1 if use_kis else len(DisclosureScraper.MARKET_TYPES)
     
     async with aiohttp.ClientSession() as session:
         # 프로그램 시작 시 1회 즉시 감지

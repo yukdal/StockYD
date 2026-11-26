@@ -206,6 +206,7 @@ KIND·DART 요청에는 15초 타임아웃이 적용됩니다(`scraper.py`의 `R
 - `test_kis.py`: KIS 키·토큰·공시 제목 수신 점검 스크립트.
 - `scrape_watchdog.py`: 수집기가 조용히 고장난 상태(파싱 0건, 수집 실패)를 감지하는 모듈.
 - `test_krx_api.py`: KRX 인증키 연동 테스트 스크립트.
+- `test_krx_summary.py`: 종목명 → 전일 선물 요약 조회와 텔레그램 메시지 최종 모양을 확인하는 스크립트 (KRX에 여러 번 요청하므로 차단 중에는 실행 금지).
 - `test_telegram.py`: 텔레그램 토큰 유효성 및 채팅방 ID 확인 스크립트 (토큰은 `.env`에서 읽음).
 - `deploy.sh`: 서버 배포 스크립트 (git pull → 의존성 설치 → 재시작 → 기동 검증).
 - `install_service.sh`: systemd 서비스 등록 스크립트 (재부팅 시 자동 시작 설정).

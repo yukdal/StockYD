@@ -6,6 +6,7 @@ from logic import DisclosureLogic
 from formatter import DisclosureFormatter
 from notifier import TelegramNotifier
 from krx_api import KRXOpenAPI  # KRX 공식 Open API 모듈 (전일 주식선물 매매정보 보강용)
+from kis_api import KISOpenAPI  # 한국투자증권 Open API (KIND 대신 공시 제목 수집)
 from scrape_watchdog import ScrapeWatchdog, build_warning_message, build_recovery_message
 from dotenv import load_dotenv
 
@@ -193,7 +194,16 @@ async def run_monitor():
     logic = DisclosureLogic()
     notifier = TelegramNotifier()
     krx = KRXOpenAPI()  # KRX 공식 API 객체 생성 (.env의 KRX_AUTH_KEY 자동 로드, 없으면 비활성)
-    kind_watchdog = ScrapeWatchdog()  # KIND 수집이 조용히 고장난 상태를 감시
+    kind_watchdog = ScrapeWatchdog()  # 공시 수집이 조용히 고장난 상태를 감시
+
+    # 공시 수집원 선택
+    # KRX가 클라우드(OCI) IP 대역의 KIND 요청을 403으로 막기 때문에, KIS 키가 설정되어 있으면
+    # KIS Open API를 주 수집원으로 쓰고 KIND는 호출하지 않는다 (막힌 곳을 두드리지 않도록).
+    kis = KISOpenAPI()
+    use_kis = kis.is_configured
+    source_label = "KIS Open API" if use_kis else "KIND"
+    print(f"📡 공시 수집원: {source_label}"
+          + (f" (제목 필터: '{kis.title_filter}')" if use_kis and kis.title_filter else ""))
 
     # KIND 수집 연속 실패 횟수와 다음 요청 허용 시각 (재시작해도 이어받는다)
     fetch_failures, next_kind_allowed_at = _load_backoff_state()
@@ -266,17 +276,17 @@ async def run_monitor():
                     continue
 
                 # 1. 데이터 수집 (병렬 처리)
-                kind_task = scraper.fetch_kind(session)
+                primary_task = kis.fetch_disclosures(session) if use_kis else scraper.fetch_kind(session)
                 dart_task = scraper.fetch_dart(session)
-                
-                results = await asyncio.gather(kind_task, dart_task)
+
+                results = await asyncio.gather(primary_task, dart_task)
                 all_disclosures = results[0] + results[1]
 
                 # 1-1. 수집기 상태 감시
                 # KIND는 HTML 파싱이라 페이지 구조가 바뀌면 예외 없이 빈 목록만 돌려준다.
                 # 그 상태로 두면 봇은 살아 있는데 아무것도 탐지하지 못하므로, 이상이
                 # 일정 시간 지속되면 알림방으로 알린다.
-                kind_stats = scraper.last_kind_stats
+                kind_stats = kis.last_stats if use_kis else scraper.last_kind_stats
                 # 시장을 순환 조회하므로 이번 주기의 건수만 보면 안 된다.
                 # (해당 시장에 공시가 없는 시간대에 '0건'으로 오탐이 난다)
                 # 시장별 최근값을 합친 rows_recent를 기준으로 판단한다.
@@ -287,10 +297,10 @@ async def run_monitor():
                         minutes = kind_watchdog.elapsed_minutes()
                         print(f"⚠️ 수집 이상 감지({detail}): {minutes}분째 지속 — 경고 알림을 보냅니다.")
                         await notifier.send_message(
-                            build_warning_message(detail, minutes, kind_stats.get('last_status')), session)
+                            build_warning_message(detail, minutes, kind_stats.get('last_status'), source_label), session)
                     elif action == 'recover':
                         print(f"✅ 수집이 정상으로 돌아왔습니다 ({detail}건 수신).")
-                        await notifier.send_message(build_recovery_message(detail), session)
+                        await notifier.send_message(build_recovery_message(detail, source_label), session)
 
                 # 수집 실패가 이어지면 점점 길게 쉰다 (차단 상태에서 계속 두드리지 않도록)
                 if kind_stats['http_ok']:

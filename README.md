@@ -32,7 +32,7 @@ KRX_AUTH_KEY=your_krx_auth_key_here
 # 한국투자증권 KIS Open API (설정하면 KIND 대신 공시 수집원으로 사용 — 클라우드 서버에서는 필수)
 KIS_APP_KEY=your_kis_app_key_here
 KIS_APP_SECRET=your_kis_app_secret_here
-# KIS_DISCLOSURE_CODES=G   # 선택. 조회할 공시 제공업체코드(쉼표로 여러 개). 기본 G=코스닥 공시
+# KIS_DISCLOSURE_CODES=I   # 선택. 조회할 공시 제공업체코드(쉼표로 여러 개). 기본 I=거래소 시장조치 공시(주식선물 가격제한폭 확대 공시가 여기로 옴)
 ```
 
 ### 2-2. 공시 수집원: KIS Open API (클라우드 서버에서는 필수)

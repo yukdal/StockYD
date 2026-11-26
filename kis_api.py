@@ -18,7 +18,9 @@
 # 필요한 .env 값:
 #   KIS_APP_KEY=...
 #   KIS_APP_SECRET=...
-#   KIS_DISCLOSURE_CODES=G        (선택. 조회할 제공업체코드, 쉼표로 여러 개. 기본 G=코스닥 공시)
+#   KIS_DISCLOSURE_CODES=I        (선택. 조회할 제공업체코드, 쉼표로 여러 개. 기본 I=거래소 시장조치 공시)
+#   실측(2026-11-26): I=공시(주식선물 가격제한폭 확대 공시가 여기로 옴), F=거래소 공시,
+#   G=코스닥 공시, N=코넥스 공시, H=K-OTC 공시
 #
 # 수집 방식 (서버 실측 결과, 2026-11-26):
 #   - 제목 검색(FID_TITL_CNTT)은 무시되고 항상 최신 40건이 온다 → 제목 필터는 쓰지 않고 로컬(logic.py)에서 거른다.
@@ -56,7 +58,7 @@ class KISOpenAPI:
     RATE_LIMIT_COOLDOWN = 60               # 호출 한도 초과(EGW00201 등): 1분
     FAILURE_COOLDOWN = 5 * 60              # 그 밖의 실패: 5분
 
-    DEFAULT_DISCLOSURE_CODES = "G"         # G = 코스닥 공시 (유가·파생 코드는 확인 후 추가)
+    DEFAULT_DISCLOSURE_CODES = "I"         # I = 거래소 시장조치 공시 (주식선물 가격제한폭 확대 공시 포함)
     MAX_PAGES_PER_CYCLE = 10               # 코드당 한 주기 최대 되감기 페이지 수 (40건 × 10 = 400건)
     PAGE_INTERVAL = 0.3                    # 페이지 호출 간격 (초당 호출 제한 대비)
     RATE_RETRY_DELAYS = (1.0, 2.0)         # EGW00201(초당 제한) 시 짧게 쉬고 재시도
@@ -298,9 +300,10 @@ class KISOpenAPI:
 
     @staticmethod
     def _extract_corp_name(title):
-        """'(주)두산 주식선물 2단계 …' → '두산'. 찾지 못하면 빈 문자열."""
+        """'(주)두산 주식선물 2단계 …' / '올릭스 주식회사 주식선물 …' → '두산' / '올릭스'.
+        찾지 못하면 빈 문자열."""
         head = title.split("주식선물", 1)[0] if "주식선물" in title else ""
-        for token in ("(주)", "㈜", "[", "]"):
+        for token in ("주식회사", "(주)", "㈜", "[", "]"):
             head = head.replace(token, " ")
         return " ".join(head.split())
 

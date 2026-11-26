@@ -224,7 +224,7 @@ sudo systemctl stop stock-monitor
 - [ ] `stock_monitor.py`의 **`POLL_INTERVAL`(30초)을 줄이지 않는다.**
 - [ ] **시장 순환 조회**(주기당 1개 시장)를 "전 시장 동시 조회"로 되돌리지 않는다.
 - [ ] 수집 실패 시 **백오프 설정**(`FETCH_BACKOFF_STEPS`: 60 → 180 → 600 → 1800초)을 줄이거나 끄지 않는다.
-- [ ] **디버그·테스트 스크립트로 KRX에 반복 요청하지 않는다.** KIND를 치는 것은 `inspect_kind.py`, `debug_test.py`이고, KRX Open API(data-dbg)를 치는 것은 `debug_krx.py`, `test_krx_api.py`, `test_krx_summary.py`(1회 실행에 최대 수십 회)입니다. 확인은 위 curl 1회로 충분합니다.
+- [ ] **디버그·테스트 스크립트로 KRX에 반복 요청하지 않는다.** KRX Open API(data-dbg)를 치는 것은 `test_krx_api.py`, `test_krx_summary.py`(1회 실행에 최대 수십 회)입니다. 확인은 위 curl 1회로 충분합니다.
 - [ ] **차단 중에는 봇을 재가동하지 않는다.** 차단 상태에서 계속 요청하면 차단이 연장됩니다.
 - [ ] **서비스를 중복 생성하지 않는다.** `stock-monitor` 외에 같은 봇을 `nohup`, `screen`, 다른 이름의 서비스로 또 띄우면 요청량이 배가 됩니다.
 

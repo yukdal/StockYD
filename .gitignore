@@ -23,4 +23,5 @@ seen_ids.json
 nohup.out
 .last_startup_notice
 .kind_access_state
+.kind_backoff_state
 kind_access.log

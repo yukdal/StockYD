@@ -19,6 +19,13 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
+# 봇이 돌고 있으면 확인하지 않는다.
+# 봇은 자체 감시(scrape_watchdog)로 수집 실패를 알리므로, 여기서까지 KRX에 요청하면
+# 장중 요청만 늘어난다. 이 스크립트는 '봇을 멈춰둔 차단 기간'에 해제를 알리는 용도다.
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet stock-monitor 2>/dev/null; then
+    exit 0
+fi
+
 STATE_FILE="$SCRIPT_DIR/.kind_access_state"
 
 # 봇이 실제로 사용하는 요청과 똑같이 보내 확인한다.

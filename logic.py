@@ -69,7 +69,8 @@ class DisclosureLogic:
                 filtered.append(disc)
 
         # 우선순위(단계) 내림차순, 그 다음 시간 내림차순 정렬
-        filtered.sort(key=lambda x: (x['priority'], x['time']), reverse=True)
+        # time이 None인 항목(DART 등)이 섞여도 정렬이 예외로 멈추지 않도록 문자열로 맞춘다
+        filtered.sort(key=lambda x: (x.get('priority', 0), str(x.get('time') or '')), reverse=True)
         return filtered
 
     def _is_seen(self, disc, disc_hash=None):

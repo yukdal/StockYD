@@ -189,6 +189,7 @@ KIND·DART 요청에는 15초 타임아웃이 적용됩니다(`scraper.py`의 `R
 - `check_kind_access.sh`: KIND 접근 가능 여부를 주기적으로 확인하고 상태 변화 시 알리는 스크립트 (cron용).
 - `stock-monitor.service`: systemd 유닛 파일 템플릿 (`install_service.sh`가 경로/계정을 채워 설치).
 - `requirements.txt`: 의존성 패키지 목록.
+- `docs/OCI_IP_CHANGE_RUNBOOK.md`: KRX가 서버 IP를 차단(403)했을 때 OCI 공인 IP를 교체해 복구하는 런북.
 
 ## ⚠️ 주의사항
 - **API 한도**: DART Open API는 일 10,000건의 호출 제한이 있습니다. 기본 폴링 주기(30초)로는 장중 10시간 기준 약 1,200건이라 여유가 있지만, 주기를 줄이면 초과할 수 있습니다.

@@ -38,37 +38,33 @@ async def main():
             return 1
         print("✅ 토큰 확보")
 
-        # 2. 제목 필터 조회 (봇이 실제로 쓰는 방식)
-        flt = kis.title_filter
-        filtered = await kis.fetch_news_titles(session, title_filter=flt)
-        if filtered is None:
-            print("❌ 제목 필터 조회 실패")
-            return 1
-        print(f"\n═══ 제목 필터 '{flt}' 조회: {len(filtered)}건 ═══")
-        for item in filtered[:15]:
-            d = kis.normalize(item)
-            hit = "🎯" if pattern.search(d['title']) else "  "
-            print(f"  {hit} {d['date']} {d['time']}  {d['title']}")
-            if hit.strip():
-                print(f"       → 종목명 추출: '{d['corp_name']}'  종목코드: {d['stock_code'] or '-'}")
-
-        await asyncio.sleep(1)  # 호출 간격
-
-        # 3. 필터 없이 최신 목록 (서버 측 제목 필터가 실제로 동작하는지 비교용)
-        latest = await kis.fetch_news_titles(session, title_filter="")
-        if latest is None:
-            print("\n⚠️ 전체 최신 목록 조회 실패")
-        else:
-            print(f"\n═══ 필터 없이 최신 목록: {len(latest)}건 (상위 10건) ═══")
-            for item in latest[:10]:
+        # 2. 공시 제공업체코드별 최신 목록 (봇이 실제로 쓰는 방식)
+        total_hits = 0
+        for code in kis.disclosure_codes:
+            rows = await kis.fetch_news_titles(session, provider_code=code)
+            if rows is None:
+                print(f"❌ 코드 {code} 조회 실패")
+                return 1
+            own = sum(1 for x in rows if x.get('news_ofer_entp_code') == code)
+            print(f"\n═══ 제공업체코드 '{code}' 최신 목록: {len(rows)}건 (그 코드 기사 {own}건) ═══")
+            for item in rows[:15]:
                 d = kis.normalize(item)
-                print(f"     {d['date']} {d['time']}  {d['title'][:60]}")
-            matches = [kis.normalize(x)['title'] for x in latest if pattern.search(str(x.get('hts_pbnt_titl_cntt', '')))]
-            print(f"   → 이 중 봇이 잡는 공시(가격제한폭 확대): {len(matches)}건")
+                hit = "🎯" if pattern.search(d['title']) else "  "
+                total_hits += bool(hit.strip())
+                print(f"  {hit} {d['date']} {d['time']}  [{item.get('dorg', '')}] {d['title'][:60]}")
+                if hit.strip():
+                    print(f"       → 종목명 추출: '{d['corp_name']}'  종목코드: {d['stock_code'] or '-'}")
+            await asyncio.sleep(1)  # 호출 간격
+
+        # 3. 봇과 같은 수집 함수 2회 (1회차 기준점, 2회차는 그 사이 새 공시만)
+        first = await kis.fetch_disclosures(session)
+        await asyncio.sleep(1)
+        second = await kis.fetch_disclosures(session)
+        print(f"\n═══ 수집 함수: 1회차 {len(first)}건(기준점), 2회차 새 공시 {len(second)}건, "
+              f"최신 페이지 {kis.last_stats['rows_recent']}행 ═══")
 
     print("\n═══ 판단 기준 ═══")
-    print("  · 제목 필터 결과에 '가격제한폭'이 들어간 제목만 나오면 → 서버 측 필터 정상 (봇 설정 그대로 사용)")
-    print("  · 제목 필터 결과가 필터 없는 목록과 똑같다면 → 서버 측 필터가 동작하지 않음 (알려주세요)")
+    print("  · 각 코드 목록이 '그 코드 기사'로만 채워져 있으면 → 제공업체코드 필터 정상")
     print("  · 🎯 표시가 붙은 제목이 오늘 공시라면 → 봇이 그대로 알림을 보낼 수 있음")
     print("  · 장중이 아니거나 해당 공시가 없는 날은 🎯가 0건일 수 있습니다 (정상)")
     return 0

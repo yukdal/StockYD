@@ -6,6 +6,7 @@ from logic import DisclosureLogic
 from formatter import DisclosureFormatter
 from notifier import TelegramNotifier
 from krx_api import KRXOpenAPI  # KRX 공식 Open API 모듈 (전일 주식선물 매매정보 보강용)
+from kis_api import KISOpenAPI  # 한국투자증권 Open API (KIND 대신 공시 제목 수집)
 from scrape_watchdog import ScrapeWatchdog, build_warning_message, build_recovery_message
 from dotenv import load_dotenv
 
@@ -111,6 +112,53 @@ POLL_INTERVAL = 30
 # 차단당한 상태에서 같은 주기로 계속 두드리면 차단이 연장되기만 한다.
 FETCH_BACKOFF_STEPS = (60, 180, 600, 1800)
 
+# 백오프를 해제하려면 연속으로 이만큼 성공해야 한다.
+# 차단 중에도 200이 간헐적으로 섞여 나오는 것이 실제로 관측되었다. 한 번의 200에
+# 백오프를 0으로 되돌리면 200/403이 번갈아 올 때 최장 단계(30분)에 영영 닿지 못한다.
+BACKOFF_RESET_SUCCESSES = 2
+
+# 백오프 상태 저장 파일. 재시작해도 백오프가 처음부터 다시 시작되지 않도록 한다.
+# (예전에는 메모리에만 있어서 deploy.sh나 재시작 한 번에 0으로 돌아가, 차단 중에도
+#  기동 직후 곧바로 KIND를 다시 두드렸다)
+BACKOFF_STATE_FILE = ".kind_backoff_state"
+BACKOFF_STATE_MAX_AGE = 6 * 60 * 60  # 이보다 오래된 상태는 무시 (밤새 쉬었으면 새로 시작)
+
+
+def _load_backoff_state():
+    """저장된 백오프 상태를 읽는다. 반환: (연속 실패 횟수, 다음 요청 허용 시각)"""
+    try:
+        if time.time() - os.path.getmtime(BACKOFF_STATE_FILE) > BACKOFF_STATE_MAX_AGE:
+            return 0, 0.0
+        with open(BACKOFF_STATE_FILE, 'r') as f:
+            failures, next_allowed = f.read().split()
+        return int(failures), float(next_allowed)
+    except (OSError, ValueError):
+        return 0, 0.0
+
+
+def _save_backoff_state(failures, next_allowed):
+    """백오프 상태를 저장한다. 정상 상태면 파일을 지운다."""
+    try:
+        if failures <= 0:
+            if os.path.exists(BACKOFF_STATE_FILE):
+                os.remove(BACKOFF_STATE_FILE)
+            return
+        with open(BACKOFF_STATE_FILE, 'w') as f:
+            f.write(f"{failures} {next_allowed:.0f}")
+    except OSError:
+        pass  # 저장 실패가 감시 자체를 멈추게 해서는 안 된다
+
+
+def _backoff_delay(failures):
+    """연속 실패 횟수에 해당하는 대기 시간(초)"""
+    return FETCH_BACKOFF_STEPS[min(failures - 1, len(FETCH_BACKOFF_STEPS) - 1)]
+
+
+# 같은 공시가 이 횟수만큼 연속으로 처리 중 예외를 내면 건너뛴다.
+# (전송 실패한 공시는 기록하지 않아 매 주기 다시 처리되므로, 예외를 내는 공시가 있으면
+#  매 주기 같은 예외가 재현되고 그 뒤에 정렬된 알림까지 막힌다)
+DISC_ERROR_LIMIT = 3
+
 
 def _should_send_startup_notice():
     """직전 시작 알림으로부터 STARTUP_NOTICE_INTERVAL이 지났으면 True."""
@@ -146,8 +194,25 @@ async def run_monitor():
     logic = DisclosureLogic()
     notifier = TelegramNotifier()
     krx = KRXOpenAPI()  # KRX 공식 API 객체 생성 (.env의 KRX_AUTH_KEY 자동 로드, 없으면 비활성)
-    kind_watchdog = ScrapeWatchdog()  # KIND 수집이 조용히 고장난 상태를 감시
-    fetch_failures = 0                # KIND 수집 연속 실패 횟수 (백오프 계산용)
+    kind_watchdog = ScrapeWatchdog()  # 공시 수집이 조용히 고장난 상태를 감시
+
+    # 공시 수집원 선택
+    # KRX가 클라우드(OCI) IP 대역의 KIND 요청을 403으로 막기 때문에, KIS 키가 설정되어 있으면
+    # KIS Open API를 주 수집원으로 쓰고 KIND는 호출하지 않는다 (막힌 곳을 두드리지 않도록).
+    kis = KISOpenAPI()
+    use_kis = kis.is_configured
+    source_label = "KIS Open API" if use_kis else "KIND"
+    print(f"📡 공시 수집원: {source_label}"
+          + (f" (제목 필터: '{kis.title_filter}')" if use_kis and kis.title_filter else ""))
+
+    # KIND 수집 연속 실패 횟수와 다음 요청 허용 시각 (재시작해도 이어받는다)
+    fetch_failures, next_kind_allowed_at = _load_backoff_state()
+    if fetch_failures:
+        wait = max(0, int(next_kind_allowed_at - time.time()))
+        print(f"⏳ 이전 실행의 백오프를 이어받습니다: 연속 실패 {fetch_failures}회, {wait}초 후 KIND 요청 재개")
+    fetch_successes = 0               # 백오프 중 연속 성공 횟수 (BACKOFF_RESET_SUCCESSES 도달 시 해제)
+    loop_errors = 0                   # 메인 루프 연속 예외 횟수
+    disc_errors = {}                  # 공시별 연속 예외 횟수 {해시: 횟수}
 
     # 기동 직후 워밍업 주기 수. 이 동안에는 이미 지나간 공시를 발송하지 않고 기록만 한다.
     # 시장을 순환 조회하므로 '시장 수'만큼(= 한 바퀴) 유지해야 모든 시장의 기존 공시가
@@ -202,19 +267,26 @@ async def run_monitor():
                 if now_kst.weekday() >= 5 or not (8 <= now_kst.hour < 18):
                     await asyncio.sleep(30) # 장 마감 시간대에는 30초 대기 후 스킵 (서버 자원 절약 및 심야 오작동 방지)
                     continue
-                
+
+                # 백오프 중이면 허용 시각까지 KIND를 요청하지 않는다.
+                # (재시작으로 이어받은 백오프도 여기서 지켜진다. 60초씩 끊어 자서 채팅방 감지·장 시간 판정은 계속 돈다)
+                remaining = next_kind_allowed_at - time.time()
+                if remaining > 0:
+                    await asyncio.sleep(min(remaining, 60))
+                    continue
+
                 # 1. 데이터 수집 (병렬 처리)
-                kind_task = scraper.fetch_kind(session)
+                primary_task = kis.fetch_disclosures(session) if use_kis else scraper.fetch_kind(session)
                 dart_task = scraper.fetch_dart(session)
-                
-                results = await asyncio.gather(kind_task, dart_task)
+
+                results = await asyncio.gather(primary_task, dart_task)
                 all_disclosures = results[0] + results[1]
 
                 # 1-1. 수집기 상태 감시
                 # KIND는 HTML 파싱이라 페이지 구조가 바뀌면 예외 없이 빈 목록만 돌려준다.
                 # 그 상태로 두면 봇은 살아 있는데 아무것도 탐지하지 못하므로, 이상이
                 # 일정 시간 지속되면 알림방으로 알린다.
-                kind_stats = scraper.last_kind_stats
+                kind_stats = kis.last_stats if use_kis else scraper.last_kind_stats
                 # 시장을 순환 조회하므로 이번 주기의 건수만 보면 안 된다.
                 # (해당 시장에 공시가 없는 시간대에 '0건'으로 오탐이 난다)
                 # 시장별 최근값을 합친 rows_recent를 기준으로 판단한다.
@@ -225,16 +297,25 @@ async def run_monitor():
                         minutes = kind_watchdog.elapsed_minutes()
                         print(f"⚠️ 수집 이상 감지({detail}): {minutes}분째 지속 — 경고 알림을 보냅니다.")
                         await notifier.send_message(
-                            build_warning_message(detail, minutes, kind_stats.get('last_status')), session)
+                            build_warning_message(detail, minutes, kind_stats.get('last_status'), source_label), session)
                     elif action == 'recover':
                         print(f"✅ 수집이 정상으로 돌아왔습니다 ({detail}건 수신).")
-                        await notifier.send_message(build_recovery_message(detail), session)
+                        await notifier.send_message(build_recovery_message(detail, source_label), session)
 
                 # 수집 실패가 이어지면 점점 길게 쉰다 (차단 상태에서 계속 두드리지 않도록)
                 if kind_stats['http_ok']:
-                    fetch_failures = 0
+                    if fetch_failures:
+                        fetch_successes += 1
+                        if fetch_successes >= BACKOFF_RESET_SUCCESSES:
+                            print(f"✅ KIND 수집이 {fetch_successes}회 연속 성공해 백오프를 해제합니다.")
+                            fetch_failures = 0
+                            fetch_successes = 0
+                        # 아직 연속 성공이 부족하면 백오프 단계를 유지한다 (간헐적 200 대비)
                 else:
                     fetch_failures += 1
+                    fetch_successes = 0
+                next_kind_allowed_at = time.time() + _backoff_delay(fetch_failures) if fetch_failures else 0.0
+                _save_backoff_state(fetch_failures, next_kind_allowed_at)
 
                 # 2. 필터링 및 우선순위 정렬
                 filtered = logic.filter_disclosures(all_disclosures)
@@ -264,14 +345,31 @@ async def run_monitor():
                     logic.is_first_ever_run = False
                 else:
                     for disc in filtered:
+                        disc_key = logic.get_hash(disc)
                         # KRX 공식 API로 해당 종목의 전일 선물 매매정보 조회 (실패해도 알림은 그대로 전송)
                         krx_info = None
                         try:
                             krx_info = await krx.get_futures_summary(session, disc['corp_name'])
                         except Exception as e:
                             print(f"⚠️ KRX 전일 데이터 조회 실패 (알림은 정상 전송): {e}")
-                        message = DisclosureFormatter.format_telegram_message(disc, krx_info)
-                        success = await notifier.send_message(message, session)
+
+                        # 공시 하나에서 난 예외가 루프 전체(와 뒤에 정렬된 알림)를 막지 않도록 개별 처리
+                        try:
+                            message = DisclosureFormatter.format_telegram_message(disc, krx_info)
+                            success = await notifier.send_message(message, session)
+                            disc_errors.pop(disc_key, None)
+                        except Exception as e:
+                            count = disc_errors.get(disc_key, 0) + 1
+                            disc_errors[disc_key] = count
+                            print(f"❌ 공시 처리 중 오류 ({count}/{DISC_ERROR_LIMIT}): {disc.get('corp_name')} — "
+                                  f"{type(e).__name__}: {e}")
+                            if count >= DISC_ERROR_LIMIT:
+                                print(f"   같은 오류가 {count}회 반복되어 이 공시는 건너뜁니다: {disc.get('title')}")
+                                logic.mark_sent(disc)
+                                disc_errors.pop(disc_key, None)
+                            else:
+                                send_failed = True
+                            continue
 
                         if success:
                             # 전송에 성공한 뒤에야 '본 공시'로 기록한다.
@@ -290,9 +388,11 @@ async def run_monitor():
                         await asyncio.sleep(0.5)
 
                 # 4. 다음 주기까지 대기
+                loop_errors = 0  # 이번 주기는 예외 없이 끝났다
+
                 if fetch_failures:
                     # KIND 수집 실패가 이어지는 중 — 차단(403)일 수 있으므로 점점 길게 쉰다.
-                    delay = FETCH_BACKOFF_STEPS[min(fetch_failures - 1, len(FETCH_BACKOFF_STEPS) - 1)]
+                    delay = _backoff_delay(fetch_failures)
                     print(f"⏳ KIND 수집 실패 {fetch_failures}회 연속 — {delay}초 후 재시도합니다.")
                 elif send_failed:
                     # 전송에 실패했다면 곧바로 다시 시도해봐야 같은 이유로 실패할 가능성이 크고,
@@ -305,9 +405,16 @@ async def run_monitor():
                 await asyncio.sleep(delay)
                 
             except Exception as e:
-                print(f"❌ 루프 오류 발생: {e}")
+                print(f"❌ 루프 오류 발생: {type(e).__name__}: {e}")
                 traceback.print_exc() # 상세 오류 정보 출력
-                await asyncio.sleep(10) # 오류 시 잠시 대기 후 재시도
+                # ⚠️ 예전에는 10초만 쉬고 재시도해 백오프를 우회했다. 매 주기 같은 예외가 나면
+                # 차단 중인 KRX를 10초마다 두드리게 된다. 정상 주기보다 짧게 쉬지 않고,
+                # 예외가 이어지면 백오프 단계처럼 점점 길게 쉰다.
+                loop_errors += 1
+                delay = max(POLL_INTERVAL, _backoff_delay(loop_errors),
+                            _backoff_delay(fetch_failures) if fetch_failures else 0)
+                print(f"⏳ 루프 오류 {loop_errors}회 연속 — {delay}초 후 재시도합니다.")
+                await asyncio.sleep(delay)
 
 if __name__ == "__main__":
     try:

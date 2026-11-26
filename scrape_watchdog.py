@@ -101,7 +101,7 @@ class ScrapeWatchdog:
         return int((now - self._problem_since) / 60)
 
 
-def build_warning_message(kind, minutes, last_status=None):
+def build_warning_message(kind, minutes, last_status=None, source="KIND"):
     """경고 신호를 텔레그램 메시지로 변환
 
     last_status가 있으면 마지막 HTTP 상태 코드를 함께 안내한다.
@@ -110,13 +110,13 @@ def build_warning_message(kind, minutes, last_status=None):
     if kind == 'empty':
         return (
             "⚠️ <b>[시스템 경고]</b>\n"
-            f"KIND 공시 수집 결과가 <b>{minutes}분째 0건</b>입니다.\n\n"
+            f"{source} 공시 수집 결과가 <b>{minutes}분째 0건</b>입니다.\n\n"
             "응답은 정상적으로 받고 있으나 공시가 하나도 읽히지 않는 상태입니다. "
-            "KIND 페이지 구조가 변경되었을 가능성이 있습니다.\n\n"
+            f"{source} 응답 형식이 변경되었을 가능성이 있습니다.\n\n"
             "봇은 계속 동작 중이지만 <b>공시를 탐지하지 못하고 있을 수 있습니다.</b>\n"
             "확인: <code>journalctl -u stock-monitor -n 50</code>"
         )
-    if last_status == 403:
+    if last_status == 403 and source == "KIND":
         return (
             "🚫 <b>[시스템 경고]</b>\n"
             f"KRX가 요청을 차단했습니다. (<b>HTTP 403</b>, {minutes}분째)\n\n"
@@ -129,16 +129,16 @@ def build_warning_message(kind, minutes, last_status=None):
     status_note = f" (마지막 응답: HTTP {last_status})" if last_status else ""
     return (
         "⚠️ <b>[시스템 경고]</b>\n"
-        f"KIND 공시 수집이 <b>{minutes}분째 실패</b>하고 있습니다.{status_note}\n\n"
-        "네트워크 장애이거나 KIND 서버 문제일 수 있습니다.\n\n"
+        f"{source} 공시 수집이 <b>{minutes}분째 실패</b>하고 있습니다.{status_note}\n\n"
+        f"네트워크 장애이거나 {source} 서버·인증 문제일 수 있습니다.\n\n"
         "봇은 계속 동작 중이지만 <b>공시를 탐지하지 못하고 있습니다.</b>\n"
         "확인: <code>journalctl -u stock-monitor -n 50</code>"
     )
 
 
-def build_recovery_message(row_count):
+def build_recovery_message(row_count, source="KIND"):
     """정상 복구 알림 메시지"""
     return (
         "✅ <b>[시스템 알림]</b>\n"
-        f"KIND 공시 수집이 정상으로 돌아왔습니다. (이번 주기 {row_count}건 수신)"
+        f"{source} 공시 수집이 정상으로 돌아왔습니다."
     )

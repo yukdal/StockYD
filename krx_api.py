@@ -6,6 +6,7 @@
 
 import os                                    # 환경변수(.env에 저장된 인증키)를 읽기 위한 표준 모듈
 import asyncio                               # 비동기 처리(기존 봇이 asyncio 기반이므로 동일하게 사용)
+import time                                  # 차단기·빈 결과 캐시의 만료 시각 계산용
 from datetime import datetime, timedelta, timezone  # 날짜 계산(전일/영업일 계산)용
 
 
@@ -21,19 +22,48 @@ class KRXOpenAPI:
         "주식선물(코스닥)": "/drv/eqkfu_ksq_bydd_trd",  # 주식선물(코스닥 기초자산) 일별매매정보
     }
 
+    # ---------------------------------------------------------------------
+    # 요청 폭주 방지 (재차단 방지)
+    #
+    # 예전에는 실패한 결과를 캐시하지 않고 차단기도 없어서, 인증 실패나 빈 응답이
+    # 나면 알림 1건마다 '7일 × 엔드포인트 2개 = 14회'를 다시 보냈다. 알림이 몰리면
+    # 1분에 100회가 넘을 수 있어, KIND 차단 사고(분당 40회)보다 위험했다.
+    # ---------------------------------------------------------------------
+    AUTH_FAILURE_COOLDOWN = 6 * 60 * 60   # 401/403: 키·이용신청 문제 → 6시간 호출 중단
+    FAILURE_COOLDOWN = 30 * 60            # 그 외 실패(429, 5xx, 타임아웃 등) → 30분 호출 중단
+    EMPTY_RESULT_TTL = 60 * 60            # 빈 결과(공휴일 등)도 1시간 캐시해 반복 조회 방지
+    LOOKBACK_DAYS = 3                     # 최근 영업일 탐색 범위 (예전 7일 → 3일)
+
+    # 템플릿 문구가 그대로 남은 키는 '미설정'으로 취급 (README 예시값 포함)
+    _PLACEHOLDER_MARKERS = ("인증키", "your_", "YOUR_")
+
     def __init__(self, auth_key=None):
         # 인증키: 인자로 받거나, 없으면 .env의 KRX_AUTH_KEY에서 읽음
         self.auth_key = auth_key or os.getenv('KRX_AUTH_KEY')
         # 발급 전 placeholder 문구가 그대로 있으면 "미설정"으로 취급
-        if self.auth_key and "인증키" in self.auth_key:
+        if self.auth_key and any(m in self.auth_key for m in self._PLACEHOLDER_MARKERS):
             self.auth_key = None
         # 같은 날짜 데이터를 반복 조회하지 않도록 메모리에 캐시 {날짜문자열: 데이터리스트}
         self._cache = {}
+        # 빈 결과 캐시 {날짜문자열: 만료시각}
+        self._empty_until = {}
+        # 차단기: 이 시각 전까지는 KRX API를 호출하지 않는다
+        self._disabled_until = 0.0
 
     @property
     def is_configured(self):
         """인증키가 설정되어 있는지 여부 (True/False)"""
         return bool(self.auth_key)
+
+    @property
+    def is_available(self):
+        """지금 호출해도 되는지 (키가 있고, 차단기가 열려 있지 않음)"""
+        return self.is_configured and time.time() >= self._disabled_until
+
+    def _trip(self, seconds, reason):
+        """차단기 작동: 일정 시간 KRX API 호출을 멈춘다"""
+        self._disabled_until = time.time() + seconds
+        print(f"⏸ KRX API 호출을 {seconds // 60}분간 중단합니다 ({reason}). 알림은 매매정보 없이 정상 발송됩니다.")
 
     async def _fetch_endpoint(self, session, endpoint, bas_dd):
         """단일 엔드포인트를 1회 호출하여 데이터 리스트를 반환 (실패 시 빈 리스트)"""
@@ -48,25 +78,40 @@ class KRXOpenAPI:
                     data = await resp.json(content_type=None)  # JSON 파싱 (Content-Type이 달라도 강제 파싱)
                     # 응답의 최상위 키는 "OutBlock_1" (✅ 실제 응답으로 검증 완료)
                     return data.get("OutBlock_1", [])
-                # 인증 실패(401/403)면 키 문제이므로 명확히 로그 출력
+                # 인증 실패(401/403)면 키 문제이므로 명확히 로그 출력하고 오래 쉰다
                 if resp.status in (401, 403):
                     print(f"❌ KRX API 인증 실패({resp.status}): 인증키 또는 해당 서비스 이용신청 여부를 확인하세요.")
+                    self._trip(self.AUTH_FAILURE_COOLDOWN, f"HTTP {resp.status}")
                     return []
+                # 429, 5xx 등 그 밖의 실패도 곧바로 재시도하지 않는다
+                print(f"⚠️ KRX API 응답 이상({endpoint}): HTTP {resp.status}")
+                self._trip(self.FAILURE_COOLDOWN, f"HTTP {resp.status}")
+                return []
         except Exception as e:
-            print(f"⚠️ KRX API 호출 오류({endpoint}): {e}")
+            detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            print(f"⚠️ KRX API 호출 오류({endpoint}): {detail}")
+            self._trip(self.FAILURE_COOLDOWN, type(e).__name__)
         return []                                          # 모든 실패 케이스는 빈 리스트 반환 (봇 전체가 죽지 않도록)
 
     async def get_day_data(self, session, bas_dd):
         """특정 날짜의 주식선물(유가+코스닥) 전체 데이터를 합쳐서 반환 (캐시 사용)"""
         if bas_dd in self._cache:                          # 이미 조회한 날짜면
             return self._cache[bas_dd]                     # 캐시에서 즉시 반환 (API 호출 절약)
+        if time.time() < self._empty_until.get(bas_dd, 0): # 최근에 빈 결과였던 날짜면
+            return []                                      # 다시 조회하지 않음
+        if not self.is_available:                          # 차단기가 작동 중이면
+            return []                                      # 호출하지 않음
 
         all_rows = []                                      # 두 시장 데이터를 담을 리스트
         for name, endpoint in self.ENDPOINTS.items():      # 유가/코스닥 엔드포인트 각각에 대해
             rows = await self._fetch_endpoint(session, endpoint, bas_dd)  # API 호출
+            if not self.is_available:                      # 방금 실패해 차단기가 작동했으면
+                return []                                  # 나머지 엔드포인트는 호출하지 않음 (실패 결과는 캐시 안 함)
             all_rows.extend(rows)                          # 결과 합치기
             await asyncio.sleep(0.2)                       # 연속 호출 사이 짧은 지연 (서버 부하 방지)
 
+        if not all_rows:                                   # 정상 응답인데 비어 있으면 (공휴일 등)
+            self._empty_until[bas_dd] = time.time() + self.EMPTY_RESULT_TTL
         if all_rows:                                       # 데이터가 있으면
             self._cache[bas_dd] = all_rows                 # 캐시에 저장 (하루에 한 번만 실제 호출)
             # 캐시가 무한히 커지지 않도록 오래된 날짜는 정리 (최근 3개 날짜만 유지)
@@ -87,11 +132,13 @@ class KRXOpenAPI:
 
     async def get_futures_summary(self, session, corp_name):
         """종목명(예: 삼성전자)으로 가장 최근 영업일의 주식선물 매매정보 요약을 반환 (없으면 None)"""
-        if not self.is_configured:                         # 인증키가 없으면
+        if not self.is_available:                          # 인증키가 없거나 차단기 작동 중이면
             return None                                    # 조용히 건너뜀 (알림 기능에 영향 없음)
 
-        for bas_dd in self._recent_business_days():        # 최근 영업일부터 차례로
+        for bas_dd in self._recent_business_days(max_back=self.LOOKBACK_DAYS):  # 최근 영업일부터 차례로
             rows = await self.get_day_data(session, bas_dd)  # 그 날짜의 전체 데이터 조회
+            if not self.is_available:                      # 조회 중 실패해 차단기가 작동했으면
+                return None                                # 더 과거 날짜를 조회하지 않음
             if not rows:                                   # 데이터가 없으면 (공휴일 등)
                 continue                                   # 하루 더 이전 날짜로 재시도
 

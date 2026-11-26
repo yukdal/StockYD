@@ -23,4 +23,8 @@ seen_ids.json
 nohup.out
 .last_startup_notice
 .kind_access_state
+.kind_backoff_state
+# KIS 접근 토큰 캐시 (계좌 접근 토큰이므로 절대 커밋 금지)
+.kis_token.json
+.kis_token.tmp.*
 kind_access.log

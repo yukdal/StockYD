@@ -28,7 +28,26 @@ TELEGRAM_CHAT_ID=your_chat_id_here
 
 # KRX 공식 Open API 인증키 (선택사항 — 없어도 알림은 정상 동작)
 KRX_AUTH_KEY=your_krx_auth_key_here
+
+# 한국투자증권 KIS Open API (설정하면 KIND 대신 공시 수집원으로 사용 — 클라우드 서버에서는 필수)
+KIS_APP_KEY=your_kis_app_key_here
+KIS_APP_SECRET=your_kis_app_secret_here
+# KIS_TITLE_FILTER=가격제한폭   # 선택. 서버 측 제목 검색어 (기본값 그대로 두면 됨)
 ```
+
+### 2-2. 공시 수집원: KIS Open API (클라우드 서버에서는 필수)
+KRX는 클라우드(OCI 등) IP 대역에서 오는 KIND 요청을 HTTP 403으로 차단합니다. 2026년 8월 이후 서버 IP가 차단되었고, **공인 IP를 새로 받아도 403**이었습니다. 가정 회선에서는 KIND가 열리므로 IP 대역 단위 차단으로 판단됩니다.
+
+그래서 `KIS_APP_KEY`·`KIS_APP_SECRET`이 설정되어 있으면 봇은 **한국투자증권 Open API의 "종합 시황/공시(제목)"**(`/uapi/domestic-stock/v1/quotations/news-title`, TR `FHKST01011800`)로 공시를 받고, **KIND는 호출하지 않습니다.** KRX 서버를 거치지 않는 증권사 공식 API라 이 차단과 무관합니다. 키가 없으면 예전처럼 KIND를 사용합니다.
+
+1. 한국투자증권 계좌 개설 후 [KIS Developers](https://apiportal.koreainvestment.com)에서 Open API 서비스 신청 → 실전투자용 **앱키·앱시크릿** 발급
+2. 서버 `.env`에 `KIS_APP_KEY`, `KIS_APP_SECRET` 입력
+3. `./venv/bin/python test_kis.py`로 공시 제목이 실제로 받아지는지 확인
+4. `bash deploy.sh`로 재시작 — 로그에 `📡 공시 수집원: KIS Open API`가 보이면 전환 완료
+
+> ⚠️ **토큰을 발급할 때마다 KIS가 카카오 알림톡을 보냅니다.** 봇은 토큰을 `.kis_token.json`(권한 0600, 시크릿 미저장)에 저장해 1일간 재사용하므로, 재시작해도 알림톡이 반복되지 않습니다. 이 파일은 계좌 접근 토큰이니 절대 커밋하거나 공유하지 마십시오.
+
+KIS는 유가/코스닥 구분과 원문 링크를 주지 않습니다. 그래서 알림의 시장 표시(`[유]`·`[코]`)가 빠지고, '상세보기'는 KIND 오늘의 공시 화면으로 연결됩니다(휴대폰 회선에서는 열립니다).
 
 ### 2-1. KRX 공식 API 인증키 발급 방법 (선택)
 1. [KRX Open API 포털](https://openapi.krx.co.kr/) 접속 → 회원가입 (KRX 정보데이터시스템 data.krx.co.kr 계정과 연동)
@@ -181,6 +200,8 @@ KIND·DART 요청에는 15초 타임아웃이 적용됩니다(`scraper.py`의 `R
 - `formatter.py`: 텔레그램 메시지 레이아웃 렌더링.
 - `notifier.py`: 텔레그램 전송 연동 모듈.
 - `krx_api.py`: KRX 공식 Open API 연동 모듈 (전일 주식선물 매매정보).
+- `kis_api.py`: 한국투자증권 KIS Open API 연동 모듈 (KIND 대신 공시 제목 수집, 토큰 캐시).
+- `test_kis.py`: KIS 키·토큰·공시 제목 수신 점검 스크립트.
 - `scrape_watchdog.py`: 수집기가 조용히 고장난 상태(파싱 0건, 수집 실패)를 감지하는 모듈.
 - `test_krx_api.py`: KRX 인증키 연동 테스트 스크립트.
 - `test_telegram.py`: 텔레그램 토큰 유효성 및 채팅방 ID 확인 스크립트 (토큰은 `.env`에서 읽음).
@@ -189,6 +210,7 @@ KIND·DART 요청에는 15초 타임아웃이 적용됩니다(`scraper.py`의 `R
 - `check_kind_access.sh`: KIND 접근 가능 여부를 주기적으로 확인하고 상태 변화 시 알리는 스크립트 (cron용).
 - `stock-monitor.service`: systemd 유닛 파일 템플릿 (`install_service.sh`가 경로/계정을 채워 설치).
 - `requirements.txt`: 의존성 패키지 목록.
+- `docs/OCI_IP_CHANGE_RUNBOOK.md`: KRX가 서버 IP를 차단(403)했을 때 OCI 공인 IP를 교체해 복구하는 런북.
 
 ## ⚠️ 주의사항
 - **API 한도**: DART Open API는 일 10,000건의 호출 제한이 있습니다. 기본 폴링 주기(30초)로는 장중 10시간 기준 약 1,200건이라 여유가 있지만, 주기를 줄이면 초과할 수 있습니다.
